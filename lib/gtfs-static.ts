@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { gunzipSync } from "node:zlib";
 
 export type StaticAgency = {
   name: string | null;
@@ -32,16 +33,19 @@ export type StaticStop = {
 export type StaticMetadata = {
   generatedAt: string | null;
   source: string;
+  serviceDates?: string[];
   counts: {
     agencies: number;
     routes: number;
     trips: number;
     stops: number;
+    tripAliases?: number;
   };
   agencies: Record<string, StaticAgency>;
   routes: Record<string, StaticRoute>;
   trips: Record<string, StaticTrip>;
   stops: Record<string, StaticStop>;
+  tripAliases?: Record<string, string>;
 };
 
 const EMPTY_STATIC_METADATA: StaticMetadata = {
@@ -51,15 +55,24 @@ const EMPTY_STATIC_METADATA: StaticMetadata = {
     agencies: 0,
     routes: 0,
     trips: 0,
-    stops: 0
+    stops: 0,
+    tripAliases: 0
   },
   agencies: {},
   routes: {},
   trips: {},
-  stops: {}
+  stops: {},
+  tripAliases: {}
 };
 
-const STATIC_METADATA_FILE = path.join(
+const STATIC_METADATA_GZIP_FILE = path.join(
+  process.cwd(),
+  "data",
+  "gtfs-static",
+  "metadata.json.gz"
+);
+
+const STATIC_METADATA_JSON_FILE = path.join(
   process.cwd(),
   "data",
   "gtfs-static",
@@ -72,9 +85,13 @@ export function getStaticMetadata(): StaticMetadata {
   if (cachedMetadata) return cachedMetadata;
 
   try {
-    cachedMetadata = JSON.parse(readFileSync(STATIC_METADATA_FILE, "utf8")) as StaticMetadata;
+    cachedMetadata = JSON.parse(gunzipSync(readFileSync(STATIC_METADATA_GZIP_FILE)).toString("utf8")) as StaticMetadata;
   } catch {
-    cachedMetadata = EMPTY_STATIC_METADATA;
+    try {
+      cachedMetadata = JSON.parse(readFileSync(STATIC_METADATA_JSON_FILE, "utf8")) as StaticMetadata;
+    } catch {
+      cachedMetadata = EMPTY_STATIC_METADATA;
+    }
   }
 
   return cachedMetadata;

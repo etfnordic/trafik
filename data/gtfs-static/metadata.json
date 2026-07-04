@@ -1,14 +1,16 @@
-{
+﻿{
   "generatedAt": null,
   "source": "GTFS Sweden 3 Static",
   "counts": {
     "agencies": 0,
     "routes": 0,
     "trips": 0,
-    "stops": 0
+    "stops": 0,
+    "tripAliases": 0
   },
   "agencies": {},
   "routes": {},
   "trips": {},
-  "stops": {}
+  "stops": {},
+  "tripAliases": {}
 }

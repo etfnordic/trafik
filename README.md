@@ -40,6 +40,7 @@ GTFS Sweden 3 Static används för att berika realtidsdatan med linjenamn, linje
 
 ```txt
 https://opendata.samtrafiken.se/gtfs-sweden/sweden.zip?key={apikey}
+https://opendata.samtrafiken.se/gtfs-sweden/sweden_extra.zip?key={apikey}
 ```
 
 Trafiklabs dokumentation: https://www.trafiklab.se/api/gtfs-datasets/gtfs-sweden/
@@ -69,16 +70,16 @@ Workflowet `.github/workflows/update-gtfs-static.yml` körs varje dag och kan ä
 
 Det gör följande:
 
-1. Hämtar `sweden.zip` med `TRAFIKLAB_STATIC_API_KEY`.
-2. Packar upp GTFS-filerna i `.cache/gtfs-sweden`.
-3. Bygger `data/gtfs-static/metadata.json` med `scripts/build-gtfs-static.mjs`.
+1. Hämtar `sweden.zip` och `sweden_extra.zip` med `TRAFIKLAB_STATIC_API_KEY`.
+2. Packar bara upp `agency.txt`, `routes.txt`, `trips.txt`, `stops.txt` och `trips_dated_vehicle_journey.txt`.
+3. Bygger `data/gtfs-static/metadata.json.gz` med `scripts/build-gtfs-static.mjs`.
 4. Committar metadatafilen om den ändrats.
 
-Static-nyckeln används bara i GitHub Actions. Den färdiga metadatafilen är publik och innehåller inga hemligheter.
+Static-nyckeln används bara i GitHub Actions. Den färdiga metadatafilen är publik och innehåller inga hemligheter. Extra-filen används endast för ett litet alias-index mellan realtime-id:n och GTFS `trip_id` för relevanta trafikdagar.
 
 ## Trafiklab-kvot
 
-Bronze räcker för static-workflowet om det körs en gång per dag: ungefär 30 anrop per månad mot en kvot på 50/månad.
+Static-workflowet använder två static-anrop per körning eftersom både `sweden.zip` och `sweden_extra.zip` behövs. Med daglig körning blir det ungefär 60 anrop på 30 dagar, vilket passar din nuvarande Bronze-kvot om den ligger på 60 anrop per 30 dagar, men lämnar nästan ingen marginal för manuella workflow-körningar.
 
 Realtime är annorlunda. Appen skickar bara realtime-anrop när någon faktiskt har sidan öppen, men en öppen karta som hämtar alla operatörer med 3/20/60-sekunders intervall kan ändå slå i Bronze-minutgränsen:
 

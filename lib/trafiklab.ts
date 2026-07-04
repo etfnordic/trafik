@@ -51,6 +51,7 @@ export type Vehicle = {
   speed: number | null;
   routeId: string | null;
   tripId: string | null;
+  startDate: string | null;
   timestamp: string | null;
   source: "gtfs-sweden-3";
   vehicleType: "train" | "bus" | "tram" | "ferry" | "unknown";
@@ -60,6 +61,7 @@ export type Vehicle = {
   routeTextColor: string | null;
   agencyName: string | null;
   tripHeadsign: string | null;
+  staticTripId: string | null;
   directionId: number | null;
 };
 
@@ -82,6 +84,7 @@ export type TripUpdate = {
   operator: OperatorId;
   operatorName: string;
   tripId: string | null;
+  startDate: string | null;
   routeId: string | null;
   routeShortName: string | null;
   routeLongName: string | null;
@@ -89,6 +92,7 @@ export type TripUpdate = {
   routeTextColor: string | null;
   agencyName: string | null;
   tripHeadsign: string | null;
+  staticTripId: string | null;
   directionId: number | null;
   vehicleId: string | null;
   timestamp: string | null;
@@ -414,7 +418,9 @@ function normalizeVehicles(
       const timestamp = numberOrNull(vehicle.timestamp);
       const routeId = vehicle.trip?.routeId ?? null;
       const tripId = vehicle.trip?.tripId ?? null;
-      const trip = lookupTrip(staticMetadata, tripId);
+      const startDate = stringOrNull(vehicle.trip?.startDate);
+      const tripMatch = lookupTripMatch(staticMetadata, tripId, startDate);
+      const trip = tripMatch?.trip ?? null;
       const route = lookupRoute(staticMetadata, routeId ?? trip?.routeId ?? null);
       const resolvedRouteId = routeId ?? trip?.routeId ?? null;
       const routeDetails = routeDetailsFrom(route);
@@ -431,6 +437,7 @@ function normalizeVehicles(
         speed: numberOrNull(position.speed),
         routeId: resolvedRouteId,
         tripId,
+        startDate,
         timestamp: timestamp ? epochSecondsToIso(timestamp) : null,
         source: "gtfs-sweden-3",
         vehicleType: inferVehicleType(resolvedRouteId, route?.type ?? null),
@@ -440,6 +447,7 @@ function normalizeVehicles(
         routeTextColor: routeDetails.routeTextColor,
         agencyName: routeDetails.agencyName,
         tripHeadsign: trip?.headsign ?? null,
+        staticTripId: tripMatch?.id ?? null,
         directionId: trip?.directionId ?? null
       };
     })
@@ -484,8 +492,10 @@ function normalizeTripUpdates(
         stopTimeUpdates.map((update) => update.departureDelaySeconds ?? update.arrivalDelaySeconds)
       );
       const tripId = tripUpdate.trip?.tripId ?? null;
+      const startDate = stringOrNull(tripUpdate.trip?.startDate);
       const routeId = tripUpdate.trip?.routeId ?? null;
-      const trip = lookupTrip(staticMetadata, tripId);
+      const tripMatch = lookupTripMatch(staticMetadata, tripId, startDate);
+      const trip = tripMatch?.trip ?? null;
       const resolvedRouteId = routeId ?? trip?.routeId ?? null;
       const route = lookupRoute(staticMetadata, resolvedRouteId);
       const routeDetails = routeDetailsFrom(route);
@@ -496,6 +506,7 @@ function normalizeTripUpdates(
         operator: operator.id,
         operatorName: operator.name,
         tripId,
+        startDate,
         routeId: resolvedRouteId,
         routeShortName: routeDetails.routeShortName,
         routeLongName: routeDetails.routeLongName,
@@ -503,6 +514,7 @@ function normalizeTripUpdates(
         routeTextColor: routeDetails.routeTextColor,
         agencyName: routeDetails.agencyName,
         tripHeadsign: trip?.headsign ?? null,
+        staticTripId: tripMatch?.id ?? null,
         directionId: trip?.directionId ?? null,
         vehicleId,
         timestamp: timestamp ? epochSecondsToIso(timestamp) : null,
@@ -560,9 +572,26 @@ function buildStaticDataSummary(staticMetadata: StaticMetadata): StaticDataSumma
   };
 }
 
-function lookupTrip(staticMetadata: StaticMetadata, tripId: string | null): StaticTrip | null {
+function lookupTripMatch(
+  staticMetadata: StaticMetadata,
+  tripId: string | null,
+  startDate: string | null
+): { id: string; trip: StaticTrip } | null {
   if (!tripId) return null;
-  return staticMetadata.trips[tripId] ?? null;
+
+  const direct = staticMetadata.trips[tripId];
+  if (direct) return { id: tripId, trip: direct };
+
+  const aliasMap = staticMetadata.tripAliases ?? {};
+  const aliasKeys = startDate ? [`${startDate}:${tripId}`, tripId] : [tripId];
+
+  for (const aliasKey of aliasKeys) {
+    const staticTripId = aliasMap[aliasKey];
+    const trip = staticTripId ? staticMetadata.trips[staticTripId] : null;
+    if (trip) return { id: staticTripId, trip };
+  }
+
+  return null;
 }
 
 function lookupRoute(staticMetadata: StaticMetadata, routeId: string | null): StaticRoute | null {
