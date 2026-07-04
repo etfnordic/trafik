@@ -9,6 +9,7 @@ import {
   MapPin,
   RefreshCw,
   Route,
+  Ship,
   TrainFront,
   TramFront
 } from "lucide-react";
@@ -354,6 +355,7 @@ export default function LiveTrafficMap() {
           <FeedHealth label="Fordon" seconds={3} statuses={vehicleState.data?.statuses} loading={vehicleState.loading} />
           <FeedHealth label="Prognoser" seconds={20} statuses={tripUpdateState.data?.statuses} loading={tripUpdateState.loading} />
           <FeedHealth label="Störningar" seconds={60} statuses={alertState.data?.statuses} loading={alertState.loading} />
+          <StaticDataHealth data={vehicleState.data?.staticData ?? tripUpdateState.data?.staticData} />
         </div>
 
         <div className="section-title">
@@ -396,6 +398,7 @@ export default function LiveTrafficMap() {
           <LegendItem icon={<TrainFront size={15} />} label="Tåg" />
           <LegendItem icon={<Bus size={15} />} label="Buss" />
           <LegendItem icon={<TramFront size={15} />} label="Spårvagn" />
+          <LegendItem icon={<Ship size={15} />} label="Båt" />
           <LegendItem icon={<MapPin size={15} />} label="Okänd typ" />
         </div>
       </section>
@@ -465,6 +468,25 @@ function FeedHealth({
   );
 }
 
+function StaticDataHealth({ data }: { data?: VehiclesResponse["staticData"] }) {
+  const statusText = data?.available
+    ? `Uppdaterad ${formatDateTime(data.generatedAt)}`
+    : "Väntar på daily workflow";
+  const countText = data?.available
+    ? `${data.counts.routes.toLocaleString("sv-SE")} linjer`
+    : "Ej byggd";
+
+  return (
+    <div className="feed-health">
+      <div>
+        <strong>Static GTFS</strong>
+        <span>{statusText}</span>
+      </div>
+      <small>{countText}</small>
+    </div>
+  );
+}
+
 function OperatorToggle({
   operator,
   active,
@@ -515,12 +537,21 @@ function VehicleDetails({
   alerts: TrafficAlert[];
   onClose: () => void;
 }) {
+  const lineTitle = vehicleLineTitle(vehicle);
+  const destination = vehicle.tripHeadsign ?? tripUpdate?.tripHeadsign ?? null;
+
   return (
     <aside className="details-panel" aria-label="Fordonsdetaljer">
       <div className="details-header">
-        <div>
-          <p className="eyebrow">{vehicle.operatorName}</p>
-          <h2>{vehicle.routeId ? `Linje ${vehicle.routeId}` : vehicleTypeLabels[vehicle.vehicleType]}</h2>
+        <div className="details-heading">
+          {vehicle.routeColor ? (
+            <span className="line-swatch" style={{ backgroundColor: vehicle.routeColor }} />
+          ) : null}
+          <div>
+            <p className="eyebrow">{vehicle.operatorName}</p>
+            <h2>{lineTitle}</h2>
+            {destination ? <span className="details-subtitle">{destination}</span> : null}
+          </div>
         </div>
         <button type="button" className="close-button" onClick={onClose}>
           Stäng
@@ -528,6 +559,9 @@ function VehicleDetails({
       </div>
 
       <div className="details-grid">
+        <Detail label="Linje" value={vehicleLineDescription(vehicle)} />
+        <Detail label="Operatör" value={vehicle.agencyName ?? vehicle.operatorName} />
+        <Detail label="Färdmedel" value={vehicleTypeLabels[vehicle.vehicleType]} />
         <Detail icon={<Route size={16} />} label="Resa" value={vehicle.tripId ?? "Saknas"} />
         <Detail icon={<MapPin size={16} />} label="Position" value={`${vehicle.lat.toFixed(5)}, ${vehicle.lon.toFixed(5)}`} />
         <Detail label="Hastighet" value={vehicle.speed === null ? "Saknas" : `${Math.round(vehicle.speed * 3.6)} km/h`} />
@@ -634,6 +668,20 @@ function delayLabel(seconds: number) {
   return `${sign}${minutes} min`;
 }
 
+function vehicleLineTitle(vehicle: Vehicle) {
+  if (vehicle.routeShortName) return `Linje ${vehicle.routeShortName}`;
+  if (vehicle.routeLongName) return vehicle.routeLongName;
+  if (vehicle.routeId) return `Linje ${vehicle.routeId}`;
+  return vehicleTypeLabels[vehicle.vehicleType];
+}
+
+function vehicleLineDescription(vehicle: Vehicle) {
+  if (vehicle.routeShortName && vehicle.routeLongName) {
+    return `${vehicle.routeShortName} - ${vehicle.routeLongName}`;
+  }
+  return vehicle.routeShortName ?? vehicle.routeLongName ?? vehicle.routeId ?? "Saknas";
+}
+
 function nextStopText(tripUpdate: TripUpdate | null) {
   if (!tripUpdate || tripUpdate.stopTimeUpdates.length === 0) return "Saknas";
   const now = Date.now();
@@ -644,8 +692,10 @@ function nextStopText(tripUpdate: TripUpdate | null) {
     }) ?? tripUpdate.stopTimeUpdates[0];
   const time = next.departureTime ?? next.arrivalTime;
   const delay = next.departureDelaySeconds ?? next.arrivalDelaySeconds;
+  const stop = next.stopName ?? next.stopId ?? "Okänd hållplats";
+  const platform = next.platformCode ? ` läge ${next.platformCode}` : "";
 
-  return `${next.stopId ?? "Okänd hållplats"}${time ? ` ${formatTime(time)}` : ""}${delay ? ` (${delayLabel(delay)})` : ""}`;
+  return `${stop}${platform}${time ? ` ${formatTime(time)}` : ""}${delay ? ` (${delayLabel(delay)})` : ""}`;
 }
 
 function toFeatureCollection(
@@ -662,9 +712,7 @@ function toFeatureCollection(
         properties: {
           ...vehicle,
           delaySeconds,
-          color: delaySeconds !== null && delaySeconds >= 300
-            ? "#dc2626"
-            : operatorColors[vehicle.operator] ?? "#475569"
+          color: vehicle.routeColor ?? operatorColors[vehicle.operator] ?? "#475569"
         },
         geometry: {
           type: "Point",

@@ -1,4 +1,5 @@
 import { transit_realtime } from "gtfs-realtime-bindings";
+import { getStaticMetadata, type StaticMetadata, type StaticRoute, type StaticTrip } from "@/lib/gtfs-static";
 
 export type FeedKind = "vehicles" | "tripUpdates" | "alerts";
 
@@ -33,6 +34,13 @@ export type FeedStatus = {
   httpStatus?: number;
 };
 
+export type StaticDataSummary = {
+  available: boolean;
+  generatedAt: string | null;
+  source: string;
+  counts: StaticMetadata["counts"];
+};
+
 export type Vehicle = {
   id: string;
   operator: OperatorId;
@@ -46,10 +54,21 @@ export type Vehicle = {
   timestamp: string | null;
   source: "gtfs-sweden-3";
   vehicleType: "train" | "bus" | "tram" | "ferry" | "unknown";
+  routeShortName: string | null;
+  routeLongName: string | null;
+  routeColor: string | null;
+  routeTextColor: string | null;
+  agencyName: string | null;
+  tripHeadsign: string | null;
+  directionId: number | null;
 };
 
 export type StopTimePrediction = {
   stopId: string | null;
+  stopName: string | null;
+  platformCode: string | null;
+  stopLat: number | null;
+  stopLon: number | null;
   stopSequence: number | null;
   arrivalDelaySeconds: number | null;
   departureDelaySeconds: number | null;
@@ -64,6 +83,13 @@ export type TripUpdate = {
   operatorName: string;
   tripId: string | null;
   routeId: string | null;
+  routeShortName: string | null;
+  routeLongName: string | null;
+  routeColor: string | null;
+  routeTextColor: string | null;
+  agencyName: string | null;
+  tripHeadsign: string | null;
+  directionId: number | null;
   vehicleId: string | null;
   timestamp: string | null;
   delaySeconds: number | null;
@@ -109,6 +135,7 @@ export type VehiclesResponse = {
   vehicles: Vehicle[];
   operators: OperatorSummary[];
   statuses: FeedStatus[];
+  staticData: StaticDataSummary;
   coverageNote: string;
 };
 
@@ -119,6 +146,7 @@ export type TripUpdatesResponse = {
   total: number;
   tripUpdates: TripUpdate[];
   statuses: FeedStatus[];
+  staticData: StaticDataSummary;
   coverageNote: string;
 };
 
@@ -192,7 +220,8 @@ const caches: Record<FeedKind, Map<OperatorId, FeedCache<unknown>>> = {
 
 export async function getVehiclePositions(): Promise<VehiclesResponse> {
   const keyInfo = getRealtimeApiKey();
-  const results = await getFeedResults("vehicles", normalizeVehicles);
+  const staticMetadata = getStaticMetadata();
+  const results = await getFeedResults("vehicles", normalizeVehicles, staticMetadata);
   const vehicles = results.flatMap((result) => result.items);
 
   return {
@@ -203,6 +232,7 @@ export async function getVehiclePositions(): Promise<VehiclesResponse> {
     vehicles,
     operators: buildOperatorSummaries({ vehicles: results }),
     statuses: results.map((result) => result.status),
+    staticData: buildStaticDataSummary(staticMetadata),
     coverageNote:
       "Kartan visar verkliga livepositioner från GTFS Sweden 3. Operatörer utan VehiclePositions visas inte som fordon."
   };
@@ -210,7 +240,8 @@ export async function getVehiclePositions(): Promise<VehiclesResponse> {
 
 export async function getTripUpdates(): Promise<TripUpdatesResponse> {
   const keyInfo = getRealtimeApiKey();
-  const results = await getFeedResults("tripUpdates", normalizeTripUpdates);
+  const staticMetadata = getStaticMetadata();
+  const results = await getFeedResults("tripUpdates", normalizeTripUpdates, staticMetadata);
   const tripUpdates = results.flatMap((result) => result.items);
 
   return {
@@ -220,6 +251,7 @@ export async function getTripUpdates(): Promise<TripUpdatesResponse> {
     total: tripUpdates.length,
     tripUpdates,
     statuses: results.map((result) => result.status),
+    staticData: buildStaticDataSummary(staticMetadata),
     coverageNote:
       "TripUpdates innehåller prognoser, inställda turer och förseningar där operatören publicerar dem."
   };
@@ -246,8 +278,10 @@ async function getFeedResults<T>(
   feed: FeedKind,
   normalize: (
     feedMessage: transit_realtime.IFeedMessage,
-    operator: OperatorConfig
-  ) => T[]
+    operator: OperatorConfig,
+    staticMetadata: StaticMetadata
+  ) => T[],
+  staticMetadata = getStaticMetadata()
 ): Promise<Array<FeedResult<T>>> {
   const { value: apiKey } = getRealtimeApiKey();
   const operators = OPERATORS.filter((operator) => operator.supports[feed]);
@@ -269,7 +303,7 @@ async function getFeedResults<T>(
   }
 
   return Promise.all(
-    operators.map((operator) => fetchOperatorFeed(operator, feed, apiKey, normalize))
+    operators.map((operator) => fetchOperatorFeed(operator, feed, apiKey, normalize, staticMetadata))
   );
 }
 
@@ -279,8 +313,10 @@ async function fetchOperatorFeed<T>(
   apiKey: string,
   normalize: (
     feedMessage: transit_realtime.IFeedMessage,
-    operator: OperatorConfig
-  ) => T[]
+    operator: OperatorConfig,
+    staticMetadata: StaticMetadata
+  ) => T[],
+  staticMetadata: StaticMetadata
 ): Promise<FeedResult<T>> {
   const cache = caches[feed].get(operator.id) as FeedCache<T> | undefined;
   const headers: HeadersInit = {};
@@ -330,7 +366,7 @@ async function fetchOperatorFeed<T>(
       longs: Number,
       enums: String
     }) as transit_realtime.IFeedMessage;
-    const items = normalize(normalizedFeed, operator);
+    const items = normalize(normalizedFeed, operator, staticMetadata);
     const updatedAt = new Date().toISOString();
 
     caches[feed].set(operator.id, {
@@ -363,7 +399,8 @@ async function fetchOperatorFeed<T>(
 
 function normalizeVehicles(
   feed: transit_realtime.IFeedMessage,
-  operator: OperatorConfig
+  operator: OperatorConfig,
+  staticMetadata: StaticMetadata
 ): Vehicle[] {
   return (feed.entity ?? [])
     .map((entity): Vehicle | null => {
@@ -377,6 +414,10 @@ function normalizeVehicles(
       const timestamp = numberOrNull(vehicle.timestamp);
       const routeId = vehicle.trip?.routeId ?? null;
       const tripId = vehicle.trip?.tripId ?? null;
+      const trip = lookupTrip(staticMetadata, tripId);
+      const route = lookupRoute(staticMetadata, routeId ?? trip?.routeId ?? null);
+      const resolvedRouteId = routeId ?? trip?.routeId ?? null;
+      const routeDetails = routeDetailsFrom(route);
       const vehicleId = vehicle.vehicle?.id ?? vehicle.vehicle?.label ?? entity.id ?? tripId;
       const id = `${operator.id}:${vehicleId ?? `${position.latitude},${position.longitude}`}`;
 
@@ -388,11 +429,18 @@ function normalizeVehicles(
         lon: position.longitude,
         bearing: numberOrNull(position.bearing),
         speed: numberOrNull(position.speed),
-        routeId,
+        routeId: resolvedRouteId,
         tripId,
         timestamp: timestamp ? epochSecondsToIso(timestamp) : null,
         source: "gtfs-sweden-3",
-        vehicleType: inferVehicleType(routeId)
+        vehicleType: inferVehicleType(resolvedRouteId, route?.type ?? null),
+        routeShortName: routeDetails.routeShortName,
+        routeLongName: routeDetails.routeLongName,
+        routeColor: routeDetails.routeColor,
+        routeTextColor: routeDetails.routeTextColor,
+        agencyName: routeDetails.agencyName,
+        tripHeadsign: trip?.headsign ?? null,
+        directionId: trip?.directionId ?? null
       };
     })
     .filter((vehicle): vehicle is Vehicle => vehicle !== null);
@@ -400,7 +448,8 @@ function normalizeVehicles(
 
 function normalizeTripUpdates(
   feed: transit_realtime.IFeedMessage,
-  operator: OperatorConfig
+  operator: OperatorConfig,
+  staticMetadata: StaticMetadata
 ): TripUpdate[] {
   return (feed.entity ?? [])
     .map((entity): TripUpdate | null => {
@@ -408,13 +457,19 @@ function normalizeTripUpdates(
       if (!tripUpdate) return null;
 
       const stopTimeUpdates = (tripUpdate.stopTimeUpdate ?? []).map((stopTimeUpdate) => {
+        const stopId = stopTimeUpdate.stopId ?? null;
+        const stop = stopId ? staticMetadata.stops[stopId] ?? null : null;
         const arrivalDelaySeconds = numberOrNull(stopTimeUpdate.arrival?.delay);
         const departureDelaySeconds = numberOrNull(stopTimeUpdate.departure?.delay);
         const arrivalTime = numberOrNull(stopTimeUpdate.arrival?.time);
         const departureTime = numberOrNull(stopTimeUpdate.departure?.time);
 
         return {
-          stopId: stopTimeUpdate.stopId ?? null,
+          stopId,
+          stopName: stop?.name ?? null,
+          platformCode: stop?.platformCode ?? null,
+          stopLat: stop?.lat ?? null,
+          stopLon: stop?.lon ?? null,
           stopSequence: numberOrNull(stopTimeUpdate.stopSequence),
           arrivalDelaySeconds,
           departureDelaySeconds,
@@ -430,6 +485,10 @@ function normalizeTripUpdates(
       );
       const tripId = tripUpdate.trip?.tripId ?? null;
       const routeId = tripUpdate.trip?.routeId ?? null;
+      const trip = lookupTrip(staticMetadata, tripId);
+      const resolvedRouteId = routeId ?? trip?.routeId ?? null;
+      const route = lookupRoute(staticMetadata, resolvedRouteId);
+      const routeDetails = routeDetailsFrom(route);
       const vehicleId = tripUpdate.vehicle?.id ?? tripUpdate.vehicle?.label ?? null;
 
       return {
@@ -437,7 +496,14 @@ function normalizeTripUpdates(
         operator: operator.id,
         operatorName: operator.name,
         tripId,
-        routeId,
+        routeId: resolvedRouteId,
+        routeShortName: routeDetails.routeShortName,
+        routeLongName: routeDetails.routeLongName,
+        routeColor: routeDetails.routeColor,
+        routeTextColor: routeDetails.routeTextColor,
+        agencyName: routeDetails.agencyName,
+        tripHeadsign: trip?.headsign ?? null,
+        directionId: trip?.directionId ?? null,
         vehicleId,
         timestamp: timestamp ? epochSecondsToIso(timestamp) : null,
         delaySeconds,
@@ -483,6 +549,35 @@ function normalizeAlerts(
       };
     })
     .filter((alert): alert is TrafficAlert => alert !== null);
+}
+
+function buildStaticDataSummary(staticMetadata: StaticMetadata): StaticDataSummary {
+  return {
+    available: Boolean(staticMetadata.generatedAt && staticMetadata.counts.routes > 0),
+    generatedAt: staticMetadata.generatedAt,
+    source: staticMetadata.source,
+    counts: staticMetadata.counts
+  };
+}
+
+function lookupTrip(staticMetadata: StaticMetadata, tripId: string | null): StaticTrip | null {
+  if (!tripId) return null;
+  return staticMetadata.trips[tripId] ?? null;
+}
+
+function lookupRoute(staticMetadata: StaticMetadata, routeId: string | null): StaticRoute | null {
+  if (!routeId) return null;
+  return staticMetadata.routes[routeId] ?? null;
+}
+
+function routeDetailsFrom(route: StaticRoute | null) {
+  return {
+    routeShortName: route?.shortName ?? null,
+    routeLongName: route?.longName ?? null,
+    routeColor: cssColorFromGtfsHex(route?.color),
+    routeTextColor: cssColorFromGtfsHex(route?.textColor),
+    agencyName: route?.agencyName ?? null
+  };
 }
 
 function buildOperatorSummaries(results: {
@@ -558,11 +653,19 @@ function translatedText(
   return swedish?.text ?? english?.text ?? translations[0]?.text ?? null;
 }
 
-function inferVehicleType(routeId: string | null): Vehicle["vehicleType"] {
+function inferVehicleType(routeId: string | null, routeType: number | null): Vehicle["vehicleType"] {
+  const typeFromStatic = vehicleTypeFromRouteType(routeType);
+  if (typeFromStatic) return typeFromStatic;
   if (!routeId) return "unknown";
   const lowerRouteId = routeId.toLowerCase();
 
-  if (lowerRouteId.includes("train") || lowerRouteId.includes("rail") || lowerRouteId.includes("tag")) {
+  if (
+    lowerRouteId.includes("train") ||
+    lowerRouteId.includes("rail") ||
+    lowerRouteId.includes("tag") ||
+    lowerRouteId.includes("metro") ||
+    lowerRouteId.includes("tunnelbana")
+  ) {
     return "train";
   }
 
@@ -579,6 +682,24 @@ function inferVehicleType(routeId: string | null): Vehicle["vehicleType"] {
   }
 
   return "unknown";
+}
+
+function vehicleTypeFromRouteType(routeType: number | null): Vehicle["vehicleType"] | null {
+  if (routeType === null) return null;
+  if (routeType === 0 || (routeType >= 900 && routeType < 1000)) return "tram";
+  if (
+    routeType === 1 ||
+    routeType === 2 ||
+    (routeType >= 100 && routeType < 200) ||
+    (routeType >= 400 && routeType < 500)
+  ) {
+    return "train";
+  }
+  if (routeType === 3 || routeType === 11 || (routeType >= 200 && routeType < 300) || (routeType >= 700 && routeType < 800)) {
+    return "bus";
+  }
+  if (routeType === 4 || (routeType >= 1000 && routeType < 1100)) return "ferry";
+  return null;
 }
 
 function isValidCoordinate(lat?: number | null, lon?: number | null) {
@@ -613,6 +734,11 @@ function stringOrNull(value?: unknown): string | null {
   if (typeof value === "string") return value;
   if (typeof value === "number") return String(value);
   return null;
+}
+
+function cssColorFromGtfsHex(value?: string | null): string | null {
+  const normalized = value?.replace(/^#/, "").trim();
+  return normalized && /^[0-9a-f]{6}$/i.test(normalized) ? `#${normalized}` : null;
 }
 
 function firstNumber(values: Array<number | null | undefined>): number | null {

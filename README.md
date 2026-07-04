@@ -2,9 +2,25 @@
 
 En Next.js-app med helskärmskarta över svensk kollektivtrafik i realtid. Appen använder GTFS Sweden 3 från Trafiklab/Samtrafiken och visar verkliga data, inte simulerade positioner.
 
+## Kartval
+
+Vi kör MapLibre GL JS med OpenFreeMap:
+
+```txt
+https://tiles.openfreemap.org/styles/liberty
+```
+
+Det är bästa gratisvalet för den här hobbyappen just nu: OpenFreeMap använder OpenStreetMap-data, kräver ingen API-nyckel och har inga request- eller visningsgränser på sin publika instans. Direktanrop till `tile.openstreetmap.org` är sämre för en publik app eftersom OSM:s egna tile-servrar är donationfinansierade, har begränsad kapacitet, saknar SLA och kan blockera tung användning.
+
+Källor:
+
+- https://openfreemap.org/
+- https://openfreemap.org/quick_start/
+- https://operations.osmfoundation.org/policies/tiles/
+
 ## Datakällor
 
-Appen hämtar tre GTFS-RT-flöden per operatör:
+Appen hämtar tre GTFS-RT-flöden per operatör, server-side:
 
 ```txt
 VehiclePositionsSweden.pb  var 3:e sekund
@@ -20,11 +36,13 @@ https://opendata.samtrafiken.se/gtfs-rt-sweden/{operator}/TripUpdatesSweden.pb?k
 https://opendata.samtrafiken.se/gtfs-rt-sweden/{operator}/ServiceAlertsSweden.pb?key={apikey}
 ```
 
-Kartan använder MapLibre och OpenFreeMap:
+GTFS Sweden 3 Static används för att berika realtidsdatan med linjenamn, linjefärg, agency, destination/headsign och hållplatsnamn.
 
 ```txt
-https://tiles.openfreemap.org/styles/liberty
+https://opendata.samtrafiken.se/gtfs-sweden/sweden.zip?key={apikey}
 ```
+
+Trafiklabs dokumentation: https://www.trafiklab.se/api/gtfs-datasets/gtfs-sweden/
 
 ## Gratis hosting
 
@@ -32,8 +50,9 @@ Rekommenderat hobbyupplägg:
 
 1. Koden ligger på GitHub.
 2. Projektet importeras i Vercel Hobby.
-3. `TRAFIKLAB_API_KEY` läggs som Environment Variable i Vercel.
-4. API-nyckeln skickas aldrig till webbläsaren och ska inte committas till GitHub.
+3. `TRAFIKLAB_REALTIME_API_KEY` läggs som Environment Variable i Vercel.
+4. `TRAFIKLAB_STATIC_API_KEY` läggs som GitHub Actions secret.
+5. API-nycklar skickas aldrig till webbläsaren och ska inte committas till GitHub.
 
 Lokalt används `.env.local`:
 
@@ -42,18 +61,33 @@ TRAFIKLAB_REALTIME_API_KEY=din-realtime-nyckel
 TRAFIKLAB_STATIC_API_KEY=din-static-nyckel
 ```
 
-`TRAFIKLAB_API_KEY` fungerar fortfarande som fallback för realtime, men använd helst det tydligare namnet `TRAFIKLAB_REALTIME_API_KEY` i Vercel så realtime- och static-nycklar inte blandas ihop.
+`TRAFIKLAB_API_KEY` fungerar fortfarande som fallback för realtime, men använd helst det tydligare namnet `TRAFIKLAB_REALTIME_API_KEY`.
+
+## Daglig static-uppdatering
+
+Workflowet `.github/workflows/update-gtfs-static.yml` körs varje dag och kan även startas manuellt från GitHub Actions.
+
+Det gör följande:
+
+1. Hämtar `sweden.zip` med `TRAFIKLAB_STATIC_API_KEY`.
+2. Packar upp GTFS-filerna i `.cache/gtfs-sweden`.
+3. Bygger `data/gtfs-static/metadata.json` med `scripts/build-gtfs-static.mjs`.
+4. Committar metadatafilen om den ändrats.
+
+Static-nyckeln används bara i GitHub Actions. Den färdiga metadatafilen är publik och innehåller inga hemligheter.
 
 ## Trafiklab-kvot
 
-De valda intervallen är aggressiva för en rikstäckande livekarta. För alla operatörer krävs i praktiken Trafiklab Gold-kvot för realtime:
+Bronze räcker för static-workflowet om det körs en gång per dag: ungefär 30 anrop per månad mot en kvot på 50/månad.
+
+Realtime är annorlunda. Appen skickar bara realtime-anrop när någon faktiskt har sidan öppen, men en öppen karta som hämtar alla operatörer med 3/20/60-sekunders intervall kan ändå slå i Bronze-minutgränsen:
 
 - VehiclePositions: cirka 300 requests/minut.
 - TripUpdates: cirka 48 requests/minut.
 - ServiceAlerts: cirka 16 requests/minut.
 - Totalt: cirka 364 requests/minut.
 
-Trafiklab-kvotuppgraderingar är gratis, men behöver begäras och motiveras i Trafiklab-portalen. Motiveringen bör nämna att projektet använder GTFS-RT, server-side cache, CDN-cache och endast hämtar de feeds som behövs.
+Det är okej för första hobbytestet om sidan används sällan, men om du vill ha stabil drift med hela Sverige live behöver vi antingen högre gratisnivå hos Trafiklab eller ett Bronze-läge som begränsar operatörer/frekvens.
 
 ## Kom igång lokalt
 

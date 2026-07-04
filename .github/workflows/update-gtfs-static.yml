@@ -1,0 +1,47 @@
+name: Update GTFS Sweden 3 Static Data
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "30 6 * * *"
+
+permissions:
+  contents: write
+
+jobs:
+  update-static-data:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Download GTFS Sweden 3 static feed
+        env:
+          TRAFIKLAB_STATIC_API_KEY: ${{ secrets.TRAFIKLAB_STATIC_API_KEY }}
+        run: |
+          test -n "$TRAFIKLAB_STATIC_API_KEY"
+          mkdir -p .cache/gtfs-sweden
+          curl --fail --silent --show-error --location \
+            "https://opendata.samtrafiken.se/gtfs-sweden/sweden.zip?key=${TRAFIKLAB_STATIC_API_KEY}" \
+            --output /tmp/sweden.zip
+          unzip -q -o /tmp/sweden.zip -d .cache/gtfs-sweden
+
+      - name: Build compact static metadata
+        run: node scripts/build-gtfs-static.mjs .cache/gtfs-sweden data/gtfs-static/metadata.json
+
+      - name: Commit updated metadata
+        run: |
+          if git diff --quiet -- data/gtfs-static/metadata.json; then
+            echo "GTFS static metadata is already up to date."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/gtfs-static/metadata.json
+          git commit -m "Update GTFS static metadata"
+          git push
