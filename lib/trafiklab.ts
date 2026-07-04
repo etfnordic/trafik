@@ -229,10 +229,10 @@ const caches: Record<FeedKind, Map<OperatorId, FeedCache<unknown>>> = {
   alerts: new Map()
 };
 
-export async function getVehiclePositions(): Promise<VehiclesResponse> {
+export async function getVehiclePositions(operatorIds?: string[]): Promise<VehiclesResponse> {
   const keyInfo = getRealtimeApiKey();
   const staticMetadata = getStaticMetadata();
-  const results = await getFeedResults("vehicles", normalizeVehicles, staticMetadata);
+  const results = await getFeedResults("vehicles", normalizeVehicles, staticMetadata, operatorIds);
   const vehicles = results.flatMap((result) => result.items);
 
   return {
@@ -249,10 +249,10 @@ export async function getVehiclePositions(): Promise<VehiclesResponse> {
   };
 }
 
-export async function getTripUpdates(): Promise<TripUpdatesResponse> {
+export async function getTripUpdates(operatorIds?: string[]): Promise<TripUpdatesResponse> {
   const keyInfo = getRealtimeApiKey();
   const staticMetadata = getStaticMetadata();
-  const results = await getFeedResults("tripUpdates", normalizeTripUpdates, staticMetadata);
+  const results = await getFeedResults("tripUpdates", normalizeTripUpdates, staticMetadata, operatorIds);
   const tripUpdates = results.flatMap((result) => result.items);
 
   return {
@@ -268,9 +268,9 @@ export async function getTripUpdates(): Promise<TripUpdatesResponse> {
   };
 }
 
-export async function getServiceAlerts(): Promise<AlertsResponse> {
+export async function getServiceAlerts(operatorIds?: string[]): Promise<AlertsResponse> {
   const keyInfo = getRealtimeApiKey();
-  const results = await getFeedResults("alerts", normalizeAlerts);
+  const results = await getFeedResults("alerts", normalizeAlerts, getStaticMetadata(), operatorIds);
   const alerts = results.flatMap((result) => result.items);
 
   return {
@@ -292,10 +292,16 @@ async function getFeedResults<T>(
     operator: OperatorConfig,
     staticMetadata: StaticMetadata
   ) => T[],
-  staticMetadata = getStaticMetadata()
+  staticMetadata = getStaticMetadata(),
+  operatorIds?: string[]
 ): Promise<Array<FeedResult<T>>> {
   const { value: apiKey } = getRealtimeApiKey();
-  const operators = OPERATORS.filter((operator) => operator.supports[feed]);
+  const requestedOperators = operatorIds
+    ? new Set(operatorIds.map((operatorId) => operatorId.toLowerCase()))
+    : null;
+  const operators = OPERATORS.filter((operator) =>
+    operator.supports[feed] && (!requestedOperators || requestedOperators.has(operator.id))
+  );
 
   if (!apiKey) {
     return operators.map((operator) => ({
@@ -661,9 +667,9 @@ function buildOperatorSummaries(results: {
           : "unavailable"
       },
       messages: {
-        vehicles: vehicleResult?.status.message ?? null,
-        tripUpdates: tripUpdateResult?.status.message ?? null,
-        alerts: alertResult?.status.message ?? null
+        vehicles: vehicleResult?.status.message ?? (operator.supports.vehicles ? "Inte hämtad i aktivt filter." : null),
+        tripUpdates: tripUpdateResult?.status.message ?? (operator.supports.tripUpdates ? "Inte hämtad i aktivt filter." : null),
+        alerts: alertResult?.status.message ?? (operator.supports.alerts ? "Inte hämtad i aktivt filter." : null)
       }
     };
   });

@@ -53,6 +53,8 @@ const VEHICLE_REFRESH_MS = 3000;
 const TRIP_UPDATE_REFRESH_MS = 20000;
 const ALERT_REFRESH_MS = 60000;
 const RATE_LIMIT_BACKOFF_MS = 60000;
+const FAST_OPERATOR_LIMIT = 2;
+const DEFAULT_ACTIVE_OPERATORS = ["sl"] as const;
 
 const operatorColors: Record<string, string> = {
   blekinge: "#0891b2",
@@ -85,10 +87,11 @@ export default function LiveTrafficMap() {
   const mapNodeRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const pendingVehicleDataRef = useRef<VehicleFeatureCollection>(emptyFeatureCollection());
-  const operatorsInitializedRef = useRef(false);
   const [mapReady, setMapReady] = useState(false);
   const [mapError, setMapError] = useState<string | null>(null);
-  const [activeOperators, setActiveOperators] = useState<Set<string>>(new Set());
+  const [activeOperators, setActiveOperators] = useState<Set<string>>(
+    () => new Set(DEFAULT_ACTIVE_OPERATORS)
+  );
   const [selectedVehicle, setSelectedVehicle] = useState<Vehicle | null>(null);
   const [vehicleState, setVehicleState] = useState<ResourceState<VehiclesResponse>>({
     loading: true,
@@ -106,19 +109,34 @@ export default function LiveTrafficMap() {
     data: null
   });
 
+  const activeOperatorQuery = useMemo(
+    () => [...activeOperators].sort().join(","),
+    [activeOperators]
+  );
+  const broadOperatorSelection = activeOperators.size > FAST_OPERATOR_LIMIT;
+  const apiUrl = useCallback(
+    (path: string) => `${path}?operators=${encodeURIComponent(activeOperatorQuery)}`,
+    [activeOperatorQuery]
+  );
   const vehicleRefreshMs = hasRateLimitedStatus(vehicleState.data?.statuses)
     ? RATE_LIMIT_BACKOFF_MS
+    : broadOperatorSelection
+      ? RATE_LIMIT_BACKOFF_MS
     : VEHICLE_REFRESH_MS;
   const tripUpdateRefreshMs = hasRateLimitedStatus(tripUpdateState.data?.statuses)
     ? RATE_LIMIT_BACKOFF_MS
+    : broadOperatorSelection
+      ? RATE_LIMIT_BACKOFF_MS
     : TRIP_UPDATE_REFRESH_MS;
   const alertRefreshMs = hasRateLimitedStatus(alertState.data?.statuses)
     ? RATE_LIMIT_BACKOFF_MS
+    : broadOperatorSelection
+      ? RATE_LIMIT_BACKOFF_MS
     : ALERT_REFRESH_MS;
 
   const loadVehicles = useCallback(async () => {
     try {
-      const response = await fetch("/api/vehicles", { cache: "no-store" });
+      const response = await fetch(apiUrl("/api/vehicles"), { cache: "no-store" });
       if (!response.ok) throw new Error(`Kunde inte hämta fordon (${response.status}).`);
       const data = (await response.json()) as VehiclesResponse;
       setVehicleState({ loading: false, error: null, data });
@@ -129,11 +147,11 @@ export default function LiveTrafficMap() {
         data: current.data
       }));
     }
-  }, []);
+  }, [apiUrl]);
 
   const loadTripUpdates = useCallback(async () => {
     try {
-      const response = await fetch("/api/trip-updates", { cache: "no-store" });
+      const response = await fetch(apiUrl("/api/trip-updates"), { cache: "no-store" });
       if (!response.ok) throw new Error(`Kunde inte hämta prognoser (${response.status}).`);
       const data = (await response.json()) as TripUpdatesResponse;
       setTripUpdateState({ loading: false, error: null, data });
@@ -144,11 +162,11 @@ export default function LiveTrafficMap() {
         data: current.data
       }));
     }
-  }, []);
+  }, [apiUrl]);
 
   const loadAlerts = useCallback(async () => {
     try {
-      const response = await fetch("/api/alerts", { cache: "no-store" });
+      const response = await fetch(apiUrl("/api/alerts"), { cache: "no-store" });
       if (!response.ok) throw new Error(`Kunde inte hämta störningar (${response.status}).`);
       const data = (await response.json()) as AlertsResponse;
       setAlertState({ loading: false, error: null, data });
@@ -159,7 +177,7 @@ export default function LiveTrafficMap() {
         data: current.data
       }));
     }
-  }, []);
+  }, [apiUrl]);
 
   useEffect(() => {
     void loadVehicles();
@@ -178,13 +196,6 @@ export default function LiveTrafficMap() {
     const interval = window.setInterval(() => void loadAlerts(), alertRefreshMs);
     return () => window.clearInterval(interval);
   }, [alertRefreshMs, loadAlerts]);
-
-  useEffect(() => {
-    const operators = vehicleState.data?.operators ?? [];
-    if (operatorsInitializedRef.current || operators.length === 0) return;
-    operatorsInitializedRef.current = true;
-    setActiveOperators(new Set(operators.filter((operator) => operator.supports.vehicles).map((operator) => operator.id)));
-  }, [vehicleState.data?.operators]);
 
   useEffect(() => {
     if (!mapNodeRef.current || mapRef.current) return;
@@ -354,6 +365,13 @@ export default function LiveTrafficMap() {
           <Notice
             tone="warning"
             text="Lägg TRAFIKLAB_API_KEY i .env.local lokalt och som environment variable i Vercel för live-data."
+          />
+        ) : null}
+
+        {broadOperatorSelection ? (
+          <Notice
+            tone="warning"
+            text="Fler än två operatörer är valda. Polling sänks till 60 sekunder för att hålla nere Trafiklab-anropen."
           />
         ) : null}
 
@@ -528,7 +546,7 @@ function OperatorToggle({
       />
       <span className="operator-text">
         <strong>{operator.name}</strong>
-        <small>{operatorStatusText(operator)}</small>
+        <small>{operatorStatusText(operator, active)}</small>
       </span>
       <span className={`status-dot ${operator.statuses.vehicles}`} />
     </label>
@@ -634,8 +652,9 @@ function LegendItem({ icon, label }: { icon: React.ReactNode; label: string }) {
   );
 }
 
-function operatorStatusText(operator: OperatorSummary) {
+function operatorStatusText(operator: OperatorSummary, active: boolean) {
   if (!operator.supports.vehicles) return "Ingen fordonsfeed";
+  if (!active) return "Inte vald";
   if (operator.statuses.vehicles === "missing_key") return "Väntar på API-nyckel";
   if (operator.statuses.vehicles === "rate_limited") return "Kvot nådd";
   if (operator.statuses.vehicles === "unavailable") return "Ingen feed just nu";

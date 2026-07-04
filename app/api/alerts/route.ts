@@ -3,8 +3,8 @@ import { getServiceAlerts } from "@/lib/trafiklab";
 
 export const dynamic = "force-dynamic";
 
-export async function GET() {
-  const data = await getServiceAlerts();
+export async function GET(request: Request) {
+  const data = await getServiceAlerts(parseOperators(request));
 
   return NextResponse.json(data, {
     headers: {
@@ -13,4 +13,10 @@ export async function GET() {
       "Vercel-CDN-Cache-Control": "max-age=60, stale-while-revalidate=60"
     }
   });
+}
+
+function parseOperators(request: Request) {
+  const { searchParams } = new URL(request.url);
+  if (!searchParams.has("operators")) return undefined;
+  return searchParams.get("operators")?.split(",").map((operator) => operator.trim()).filter(Boolean) ?? [];
 }
