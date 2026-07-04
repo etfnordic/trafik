@@ -465,6 +465,8 @@ h2 {
   right: 16px;
   bottom: 16px;
   width: min(420px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  overflow: auto;
   padding: 18px;
   border-radius: 8px;
 }
@@ -507,9 +509,105 @@ h2 {
   border-top: 1px solid var(--line);
 }
 
+.subsection-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 9px;
+}
+
+.subsection-heading h3,
 .vehicle-alerts h3 {
   margin: 0 0 8px;
   font-size: 0.94rem;
+}
+
+.subsection-heading h3 {
+  margin: 0;
+}
+
+.subsection-heading span {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.upcoming-stops {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.upcoming-stops ol {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 7px;
+}
+
+.upcoming-stops li {
+  display: grid;
+  grid-template-columns: 14px 1fr;
+  gap: 9px;
+  align-items: start;
+  min-height: 34px;
+}
+
+.stop-marker {
+  width: 10px;
+  height: 10px;
+  margin-top: 5px;
+  border: 2px solid var(--blue);
+  border-radius: 999px;
+  background: #ffffff;
+}
+
+.upcoming-stops li.next .stop-marker {
+  background: var(--ink);
+  border-color: var(--ink);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.18);
+}
+
+.upcoming-stops strong,
+.upcoming-stops small {
+  display: block;
+}
+
+.upcoming-stops strong {
+  font-size: 0.86rem;
+  line-height: 1.25;
+}
+
+.upcoming-stops small {
+  min-height: 16px;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.inline-loading,
+.inline-error,
+.inline-empty {
+  min-height: 36px;
+  display: grid;
+  place-items: center;
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 0.8rem;
+  text-align: center;
+}
+
+.inline-loading,
+.inline-empty {
+  color: var(--muted);
+  border: 1px dashed var(--line);
+}
+
+.inline-error {
+  color: #991b1b;
+  background: #fef2f2;
 }
 
 .vehicle-alerts p {
@@ -531,6 +629,22 @@ h2 {
 .maplibregl-ctrl-bottom-right {
   right: 12px;
   bottom: 8px;
+}
+
+.vehicle-hover-popup .maplibregl-popup-content {
+  padding: 6px 9px;
+  border: 1px solid rgba(24, 32, 51, 0.14);
+  border-radius: 8px;
+  background: rgba(17, 24, 39, 0.92);
+  color: #ffffff;
+  box-shadow: 0 10px 24px rgba(17, 24, 39, 0.22);
+  font-size: 0.78rem;
+  font-weight: 750;
+  line-height: 1.25;
+}
+
+.vehicle-hover-popup .maplibregl-popup-tip {
+  border-top-color: rgba(17, 24, 39, 0.92);
 }
 
 @media (max-width: 780px) {

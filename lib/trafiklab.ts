@@ -1,5 +1,5 @@
 import { transit_realtime } from "gtfs-realtime-bindings";
-import { getStaticMetadata, type StaticMetadata, type StaticRoute, type StaticTrip } from "@/lib/gtfs-static";
+import { findStaticTripMatch, getStaticMetadata, type StaticMetadata, type StaticRoute } from "@/lib/gtfs-static";
 
 export type FeedKind = "vehicles" | "tripUpdates" | "alerts";
 
@@ -448,7 +448,7 @@ function normalizeVehicles(
       const routeId = vehicle.trip?.routeId ?? null;
       const tripId = vehicle.trip?.tripId ?? null;
       const startDate = stringOrNull(vehicle.trip?.startDate);
-      const tripMatch = lookupTripMatch(staticMetadata, tripId, startDate);
+      const tripMatch = findStaticTripMatch(tripId, startDate, staticMetadata);
       const trip = tripMatch?.trip ?? null;
       const route = lookupRoute(staticMetadata, routeId ?? trip?.routeId ?? null);
       const resolvedRouteId = routeId ?? trip?.routeId ?? null;
@@ -523,7 +523,7 @@ function normalizeTripUpdates(
       const tripId = tripUpdate.trip?.tripId ?? null;
       const startDate = stringOrNull(tripUpdate.trip?.startDate);
       const routeId = tripUpdate.trip?.routeId ?? null;
-      const tripMatch = lookupTripMatch(staticMetadata, tripId, startDate);
+      const tripMatch = findStaticTripMatch(tripId, startDate, staticMetadata);
       const trip = tripMatch?.trip ?? null;
       const resolvedRouteId = routeId ?? trip?.routeId ?? null;
       const route = lookupRoute(staticMetadata, resolvedRouteId);
@@ -599,28 +599,6 @@ function buildStaticDataSummary(staticMetadata: StaticMetadata): StaticDataSumma
     source: staticMetadata.source,
     counts: staticMetadata.counts
   };
-}
-
-function lookupTripMatch(
-  staticMetadata: StaticMetadata,
-  tripId: string | null,
-  startDate: string | null
-): { id: string; trip: StaticTrip } | null {
-  if (!tripId) return null;
-
-  const direct = staticMetadata.trips[tripId];
-  if (direct) return { id: tripId, trip: direct };
-
-  const aliasMap = staticMetadata.tripAliases ?? {};
-  const aliasKeys = startDate ? [`${startDate}:${tripId}`, tripId] : [tripId];
-
-  for (const aliasKey of aliasKeys) {
-    const staticTripId = aliasMap[aliasKey];
-    const trip = staticTripId ? staticMetadata.trips[staticTripId] : null;
-    if (trip) return { id: staticTripId, trip };
-  }
-
-  return null;
 }
 
 function lookupRoute(staticMetadata: StaticMetadata, routeId: string | null): StaticRoute | null {

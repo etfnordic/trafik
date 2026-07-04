@@ -29,23 +29,19 @@ jobs:
           curl --fail --silent --show-error --location \
             "https://opendata.samtrafiken.se/gtfs-sweden/sweden.zip?key=${TRAFIKLAB_STATIC_API_KEY}" \
             --output /tmp/sweden.zip
-          curl --fail --silent --show-error --location \
-            "https://opendata.samtrafiken.se/gtfs-sweden/sweden_extra.zip?key=${TRAFIKLAB_STATIC_API_KEY}" \
-            --output /tmp/sweden_extra.zip
-          unzip -q -o /tmp/sweden.zip agency.txt routes.txt trips.txt stops.txt -d .cache/gtfs-sweden
-          unzip -q -o /tmp/sweden_extra.zip trips_dated_vehicle_journey.txt -d .cache/gtfs-sweden
+          unzip -q -o /tmp/sweden.zip agency.txt routes.txt trips.txt stops.txt stop_times.txt shapes.txt -d .cache/gtfs-sweden
 
       - name: Build compact static metadata
-        run: node scripts/build-gtfs-static.mjs .cache/gtfs-sweden data/gtfs-static/metadata.json.gz
+        run: node scripts/build-gtfs-static.mjs .cache/gtfs-sweden data/gtfs-static/metadata.json.gz data/gtfs-static/trip-details.json.gz
 
       - name: Commit updated metadata
         run: |
-          if git diff --quiet -- data/gtfs-static/metadata.json.gz; then
+          if git diff --quiet -- data/gtfs-static/metadata.json.gz data/gtfs-static/trip-details.json.gz; then
             echo "GTFS static metadata is already up to date."
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/gtfs-static/metadata.json.gz
+          git add data/gtfs-static/metadata.json.gz data/gtfs-static/trip-details.json.gz
           git commit -m "Update GTFS static metadata"
           git push

@@ -16,13 +16,15 @@ import {
 import maplibregl, {
   GeoJSONSource,
   Map as MapLibreMap,
-  MapLayerMouseEvent
+  MapLayerMouseEvent,
+  Popup
 } from "maplibre-gl";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   AlertsResponse,
   FeedStatus,
   OperatorSummary,
+  StopTimePrediction,
   TrafficAlert,
   TripUpdate,
   TripUpdatesResponse,
@@ -39,6 +41,8 @@ type ResourceState<T> = {
 type VehicleProperties = Vehicle & {
   color: string;
   delaySeconds: number | null;
+  hasBearing: boolean;
+  label: string;
 };
 
 type VehicleFeatureCollection = GeoJSON.FeatureCollection<
@@ -46,15 +50,78 @@ type VehicleFeatureCollection = GeoJSON.FeatureCollection<
   VehicleProperties
 >;
 
+type TripDetailsStop = {
+  id: string;
+  name: string | null;
+  lat: number | null;
+  lon: number | null;
+  platformCode: string | null;
+  parentStation: string | null;
+  sequence: number;
+};
+
+type TripDetailsResponse = {
+  ok: boolean;
+  generatedAt: string;
+  staticGeneratedAt?: string | null;
+  message?: string;
+  staticTripId: string | null;
+  routeId?: string | null;
+  shapeId?: string | null;
+  patternId?: string | null;
+  headsign?: string | null;
+  route?: {
+    shortName: string | null;
+    longName: string | null;
+    type: number | null;
+    color: string | null;
+    textColor: string | null;
+    agencyName: string | null;
+  } | null;
+  lineCoordinates: Array<[number, number]>;
+  stops: TripDetailsStop[];
+};
+
+type SelectedRouteProperties = {
+  color: string;
+};
+
+type SelectedRouteFeatureCollection = GeoJSON.FeatureCollection<
+  GeoJSON.LineString,
+  SelectedRouteProperties
+>;
+
+type SelectedStopProperties = TripDetailsStop & {
+  color: string;
+  upcoming: boolean;
+  next: boolean;
+  predictionTime: string | null;
+  delaySeconds: number | null;
+};
+
+type SelectedStopsFeatureCollection = GeoJSON.FeatureCollection<
+  GeoJSON.Point,
+  SelectedStopProperties
+>;
+
 const SWEDEN_CENTER: [number, number] = [15.2, 62.0];
 const VEHICLE_SOURCE_ID = "vehicles";
-const VEHICLE_LAYER_ID = "vehicle-points";
+const VEHICLE_DOT_LAYER_ID = "vehicle-dots";
+const VEHICLE_ARROW_LAYER_ID = "vehicle-arrows";
+const VEHICLE_ARROW_IMAGE_ID = "vehicle-direction-arrow";
+const SELECTED_ROUTE_SOURCE_ID = "selected-route";
+const SELECTED_ROUTE_HALO_LAYER_ID = "selected-route-halo";
+const SELECTED_ROUTE_LAYER_ID = "selected-route-line";
+const SELECTED_STOPS_SOURCE_ID = "selected-stops";
+const SELECTED_STOP_LAYER_ID = "selected-stop-points";
+const SELECTED_STOP_LABEL_LAYER_ID = "selected-stop-labels";
 const VEHICLE_REFRESH_MS = 3000;
 const TRIP_UPDATE_REFRESH_MS = 20000;
 const ALERT_REFRESH_MS = 60000;
 const RATE_LIMIT_BACKOFF_MS = 60000;
 const FAST_OPERATOR_LIMIT = 2;
 const DEFAULT_ACTIVE_OPERATORS = ["sl"] as const;
+const configuredVehicleEventMaps = new WeakSet<MapLibreMap>();
 
 const operatorColors: Record<string, string> = {
   blekinge: "#0891b2",
@@ -86,13 +153,21 @@ const vehicleTypeLabels: Record<Vehicle["vehicleType"], string> = {
 export default function LiveTrafficMap() {
   const mapNodeRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
+  const hoverPopupRef = useRef<Popup | null>(null);
   const pendingVehicleDataRef = useRef<VehicleFeatureCollection>(emptyFeatureCollection());
+  const pendingSelectedRouteDataRef = useRef<SelectedRouteFeatureCollection>(emptyRouteFeatureCollection());
+  const pendingSelectedStopsDataRef = useRef<SelectedStopsFeatureCollection>(emptyStopsFeatureCollection());
   const [mapReady, setMapReady] = useState(false);
   const [mapError, setMapError] = useState<string | null>(null);
   const [activeOperators, setActiveOperators] = useState<Set<string>>(
     () => new Set(DEFAULT_ACTIVE_OPERATORS)
   );
   const [selectedVehicle, setSelectedVehicle] = useState<Vehicle | null>(null);
+  const [tripDetailsState, setTripDetailsState] = useState<ResourceState<TripDetailsResponse>>({
+    loading: false,
+    error: null,
+    data: null
+  });
   const [vehicleState, setVehicleState] = useState<ResourceState<VehiclesResponse>>({
     loading: true,
     error: null,
@@ -220,7 +295,12 @@ export default function LiveTrafficMap() {
     );
 
     const markMapReady = () => {
-      ensureVehicleLayer(map, pendingVehicleDataRef.current, setSelectedVehicle);
+      ensureSelectedTripLayers(
+        map,
+        pendingSelectedRouteDataRef.current,
+        pendingSelectedStopsDataRef.current
+      );
+      ensureVehicleLayer(map, pendingVehicleDataRef.current, setSelectedVehicle, hoverPopupRef);
       map.resize();
       setMapReady(true);
       setMapError(null);
@@ -244,6 +324,8 @@ export default function LiveTrafficMap() {
 
     return () => {
       window.clearTimeout(fallbackReadyTimer);
+      hoverPopupRef.current?.remove();
+      hoverPopupRef.current = null;
       map.remove();
       mapRef.current = null;
     };
@@ -287,6 +369,7 @@ export default function LiveTrafficMap() {
   const selectedTripUpdate = selectedVehicle?.tripId
     ? tripUpdatesByTripId.get(selectedVehicle.tripId) ?? null
     : null;
+  const selectedTripDetails = tripDetailsState.data?.ok ? tripDetailsState.data : null;
 
   const selectedAlerts = selectedVehicle
     ? activeAlerts
@@ -298,6 +381,78 @@ export default function LiveTrafficMap() {
     vehicleState.data?.hasApiKey === false ||
     tripUpdateState.data?.hasApiKey === false ||
     alertState.data?.hasApiKey === false;
+
+  useEffect(() => {
+    if (!selectedVehicle) {
+      setTripDetailsState({ loading: false, error: null, data: null });
+      pendingSelectedRouteDataRef.current = emptyRouteFeatureCollection();
+      pendingSelectedStopsDataRef.current = emptyStopsFeatureCollection();
+      setSelectedTripSourceData(
+        mapRef.current,
+        pendingSelectedRouteDataRef.current,
+        pendingSelectedStopsDataRef.current
+      );
+      return;
+    }
+
+    const params = new URLSearchParams();
+    if (selectedVehicle.staticTripId) params.set("staticTripId", selectedVehicle.staticTripId);
+    if (selectedVehicle.tripId) params.set("tripId", selectedVehicle.tripId);
+    if (selectedVehicle.startDate) params.set("startDate", selectedVehicle.startDate);
+
+    if (!params.toString()) {
+      setTripDetailsState({
+        loading: false,
+        error: "Fordonet saknar tripId, så statisk linjedata kan inte kopplas.",
+        data: null
+      });
+      return;
+    }
+
+    const controller = new AbortController();
+    pendingSelectedRouteDataRef.current = emptyRouteFeatureCollection();
+    pendingSelectedStopsDataRef.current = emptyStopsFeatureCollection();
+    setSelectedTripSourceData(
+      mapRef.current,
+      pendingSelectedRouteDataRef.current,
+      pendingSelectedStopsDataRef.current
+    );
+    setTripDetailsState({ loading: true, error: null, data: null });
+
+    fetch(`/api/trip-details?${params.toString()}`, {
+      cache: "no-store",
+      signal: controller.signal
+    })
+      .then(async (response) => {
+        const data = (await response.json()) as TripDetailsResponse;
+        if (!response.ok || !data.ok) {
+          throw new Error(data.message ?? `Kunde inte hämta linjedata (${response.status}).`);
+        }
+        setTripDetailsState({ loading: false, error: null, data });
+      })
+      .catch((error) => {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        setTripDetailsState({
+          loading: false,
+          error: error instanceof Error ? error.message : "Ett okänt linjedatafel uppstod.",
+          data: null
+        });
+      });
+
+    return () => controller.abort();
+  }, [selectedVehicle]);
+
+  useEffect(() => {
+    const routeData = toSelectedRouteFeatureCollection(selectedTripDetails, selectedVehicle);
+    const stopData = toSelectedStopsFeatureCollection(
+      selectedTripDetails,
+      selectedTripUpdate,
+      selectedVehicle
+    );
+    pendingSelectedRouteDataRef.current = routeData;
+    pendingSelectedStopsDataRef.current = stopData;
+    setSelectedTripSourceData(mapRef.current, routeData, stopData);
+  }, [selectedTripDetails, selectedTripUpdate, selectedVehicle]);
 
   const toggleOperator = (operator: OperatorSummary) => {
     if (!operator.supports.vehicles) return;
@@ -436,6 +591,9 @@ export default function LiveTrafficMap() {
         <VehicleDetails
           vehicle={selectedVehicle}
           tripUpdate={selectedTripUpdate}
+          tripDetails={selectedTripDetails}
+          tripDetailsLoading={tripDetailsState.loading}
+          tripDetailsError={tripDetailsState.error}
           alerts={selectedAlerts}
           onClose={() => setSelectedVehicle(null)}
         />
@@ -568,11 +726,17 @@ function AlertItem({ alert }: { alert: TrafficAlert }) {
 function VehicleDetails({
   vehicle,
   tripUpdate,
+  tripDetails,
+  tripDetailsLoading,
+  tripDetailsError,
   alerts,
   onClose
 }: {
   vehicle: Vehicle;
   tripUpdate: TripUpdate | null;
+  tripDetails: TripDetailsResponse | null;
+  tripDetailsLoading: boolean;
+  tripDetailsError: string | null;
   alerts: TrafficAlert[];
   onClose: () => void;
 }) {
@@ -611,6 +775,13 @@ function VehicleDetails({
         <Detail label="Källa" value="GTFS Sweden 3" />
       </div>
 
+      <UpcomingStops
+        tripDetails={tripDetails}
+        tripUpdate={tripUpdate}
+        loading={tripDetailsLoading}
+        error={tripDetailsError}
+      />
+
       {alerts.length > 0 ? (
         <div className="vehicle-alerts">
           <h3>Berörda störningar</h3>
@@ -620,6 +791,60 @@ function VehicleDetails({
         </div>
       ) : null}
     </aside>
+  );
+}
+
+function UpcomingStops({
+  tripDetails,
+  tripUpdate,
+  loading,
+  error
+}: {
+  tripDetails: TripDetailsResponse | null;
+  tripUpdate: TripUpdate | null;
+  loading: boolean;
+  error: string | null;
+}) {
+  const rows = useMemo(
+    () => upcomingStopRows(tripDetails, tripUpdate).slice(0, 8),
+    [tripDetails, tripUpdate]
+  );
+
+  return (
+    <div className="upcoming-stops">
+      <div className="subsection-heading">
+        <h3>{tripUpdate ? "Kommande stationer" : "Stationer"}</h3>
+        {tripDetails?.stops.length ? <span>{tripDetails.stops.length} stopp</span> : null}
+      </div>
+
+      {loading ? <div className="inline-loading">Hämtar linje och stationer...</div> : null}
+      {!loading && error ? <div className="inline-error">{error}</div> : null}
+      {!loading && !error && rows.length === 0 ? (
+        <div className="inline-empty">Ingen statisk stopplista hittades för resan.</div>
+      ) : null}
+
+      {rows.length > 0 ? (
+        <ol>
+          {rows.map((row) => (
+            <li key={`${row.stop.id}-${row.stop.sequence}`} className={row.next ? "next" : ""}>
+              <span className="stop-marker" />
+              <div>
+                <strong>{row.stop.name ?? row.stop.id}</strong>
+                <small>
+                  {[
+                    row.stop.platformCode ? `läge ${row.stop.platformCode}` : null,
+                    row.time ? formatTime(row.time) : null,
+                    row.delaySeconds !== null ? delayLabel(row.delaySeconds) : null
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")}
+                </small>
+              </div>
+            </li>
+          ))}
+        </ol>
+      ) : null}
+    </div>
   );
 }
 
@@ -740,6 +965,61 @@ function nextStopText(tripUpdate: TripUpdate | null) {
   return `${stop}${platform}${time ? ` ${formatTime(time)}` : ""}${delay ? ` (${delayLabel(delay)})` : ""}`;
 }
 
+function vehicleHoverLabel(vehicle: Vehicle, tripUpdate: TripUpdate | null) {
+  const operator = vehicle.operatorName;
+  const line = vehicle.routeShortName ?? vehicle.routeLongName ?? vehicle.routeId;
+  const destination = vehicle.tripHeadsign ?? tripUpdate?.tripHeadsign;
+  const prefix = [operator, line].filter(Boolean).join(" ");
+
+  if (prefix && destination) return `${prefix} \u2192 ${destination}`;
+  return prefix || vehicleTypeLabels[vehicle.vehicleType];
+}
+
+function upcomingStopRows(details: TripDetailsResponse | null, tripUpdate: TripUpdate | null) {
+  if (!details) return [];
+
+  const updates = tripUpdate?.stopTimeUpdates ?? [];
+  const updateBySequence = new Map<number, StopTimePrediction>();
+  const updateByStopId = new Map<string, StopTimePrediction>();
+
+  for (const update of updates) {
+    if (typeof update.stopSequence === "number") {
+      updateBySequence.set(update.stopSequence, update);
+    }
+    if (update.stopId) {
+      updateByStopId.set(update.stopId, update);
+    }
+  }
+
+  const nextSequence = nextStopSequence(updates);
+  const visibleStops = nextSequence
+    ? details.stops.filter((stop) => stop.sequence >= nextSequence)
+    : details.stops;
+
+  return visibleStops.map((stop) => {
+    const prediction = updateBySequence.get(stop.sequence) ?? updateByStopId.get(stop.id) ?? null;
+
+    return {
+      stop,
+      next: nextSequence === stop.sequence,
+      time: prediction?.departureTime ?? prediction?.arrivalTime ?? null,
+      delaySeconds: prediction?.departureDelaySeconds ?? prediction?.arrivalDelaySeconds ?? null
+    };
+  });
+}
+
+function nextStopSequence(updates: StopTimePrediction[]) {
+  if (updates.length === 0) return null;
+
+  const now = Date.now();
+  const futureUpdate = updates.find((update) => {
+    const time = update.departureTime ?? update.arrivalTime;
+    return typeof update.stopSequence === "number" && time ? Date.parse(time) >= now : false;
+  });
+
+  return futureUpdate?.stopSequence ?? updates.find((update) => typeof update.stopSequence === "number")?.stopSequence ?? null;
+}
+
 function toFeatureCollection(
   vehicles: Vehicle[],
   tripUpdatesByTripId: Map<string, TripUpdate>
@@ -754,7 +1034,9 @@ function toFeatureCollection(
         properties: {
           ...vehicle,
           delaySeconds,
-          color: vehicle.routeColor ?? operatorColors[vehicle.operator] ?? "#475569"
+          color: vehicle.routeColor ?? operatorColors[vehicle.operator] ?? "#475569",
+          hasBearing: vehicle.bearing !== null,
+          label: vehicleHoverLabel(vehicle, vehicle.tripId ? tripUpdatesByTripId.get(vehicle.tripId) ?? null : null)
         },
         geometry: {
           type: "Point",
@@ -772,11 +1054,101 @@ function emptyFeatureCollection(): VehicleFeatureCollection {
   };
 }
 
+function emptyRouteFeatureCollection(): SelectedRouteFeatureCollection {
+  return {
+    type: "FeatureCollection",
+    features: []
+  };
+}
+
+function emptyStopsFeatureCollection(): SelectedStopsFeatureCollection {
+  return {
+    type: "FeatureCollection",
+    features: []
+  };
+}
+
+function toSelectedRouteFeatureCollection(
+  details: TripDetailsResponse | null,
+  vehicle: Vehicle | null
+): SelectedRouteFeatureCollection {
+  const coordinates = (details?.lineCoordinates ?? []).filter(isValidLineCoordinate);
+
+  if (coordinates.length < 2) return emptyRouteFeatureCollection();
+
+  return {
+    type: "FeatureCollection",
+    features: [
+      {
+        type: "Feature",
+        properties: {
+          color: details?.route?.color ?? vehicle?.routeColor ?? (vehicle ? operatorColors[vehicle.operator] : null) ?? "#111827"
+        },
+        geometry: {
+          type: "LineString",
+          coordinates
+        }
+      }
+    ]
+  };
+}
+
+function toSelectedStopsFeatureCollection(
+  details: TripDetailsResponse | null,
+  tripUpdate: TripUpdate | null,
+  vehicle: Vehicle | null
+): SelectedStopsFeatureCollection {
+  if (!details) return emptyStopsFeatureCollection();
+
+  const updates = tripUpdate?.stopTimeUpdates ?? [];
+  const updateBySequence = new Map<number, StopTimePrediction>();
+  const updateByStopId = new Map<string, StopTimePrediction>();
+  const nextSequence = nextStopSequence(updates);
+  const color = details.route?.color ?? vehicle?.routeColor ?? (vehicle ? operatorColors[vehicle.operator] : null) ?? "#2563eb";
+
+  for (const update of updates) {
+    if (typeof update.stopSequence === "number") {
+      updateBySequence.set(update.stopSequence, update);
+    }
+    if (update.stopId) {
+      updateByStopId.set(update.stopId, update);
+    }
+  }
+
+  return {
+    type: "FeatureCollection",
+    features: details.stops
+      .filter((stop) => typeof stop.lat === "number" && typeof stop.lon === "number")
+      .map((stop) => {
+        const prediction = updateBySequence.get(stop.sequence) ?? updateByStopId.get(stop.id) ?? null;
+
+        return {
+          type: "Feature",
+          properties: {
+            ...stop,
+            color,
+            upcoming: nextSequence ? stop.sequence >= nextSequence : false,
+            next: nextSequence === stop.sequence,
+            predictionTime: prediction?.departureTime ?? prediction?.arrivalTime ?? null,
+            delaySeconds: prediction?.departureDelaySeconds ?? prediction?.arrivalDelaySeconds ?? null
+          },
+          geometry: {
+            type: "Point",
+            coordinates: [stop.lon as number, stop.lat as number]
+          }
+        };
+      })
+  };
+}
+
 function ensureVehicleLayer(
   map: MapLibreMap,
   data: VehicleFeatureCollection,
-  setSelectedVehicle: (vehicle: Vehicle) => void
+  setSelectedVehicle: (vehicle: Vehicle) => void,
+  hoverPopupRef: React.MutableRefObject<Popup | null>
 ) {
+  ensureVehicleArrowImage(map);
+
   if (!map.getSource(VEHICLE_SOURCE_ID)) {
     map.addSource(VEHICLE_SOURCE_ID, {
       type: "geojson",
@@ -784,11 +1156,12 @@ function ensureVehicleLayer(
     });
   }
 
-  if (!map.getLayer(VEHICLE_LAYER_ID)) {
+  if (!map.getLayer(VEHICLE_DOT_LAYER_ID)) {
     map.addLayer({
-      id: VEHICLE_LAYER_ID,
+      id: VEHICLE_DOT_LAYER_ID,
       type: "circle",
       source: VEHICLE_SOURCE_ID,
+      filter: ["==", ["get", "hasBearing"], false],
       paint: {
         "circle-radius": [
           "interpolate",
@@ -817,23 +1190,253 @@ function ensureVehicleLayer(
         "circle-opacity": 0.94
       }
     });
+  }
 
-    map.on("mouseenter", VEHICLE_LAYER_ID, () => {
-      map.getCanvas().style.cursor = "pointer";
-    });
-
-    map.on("mouseleave", VEHICLE_LAYER_ID, () => {
-      map.getCanvas().style.cursor = "";
-    });
-
-    map.on("click", VEHICLE_LAYER_ID, (event: MapLayerMouseEvent) => {
-      const feature = event.features?.[0];
-      if (!feature?.properties) return;
-      setSelectedVehicle(feature.properties as Vehicle);
+  if (!map.getLayer(VEHICLE_ARROW_LAYER_ID)) {
+    map.addLayer({
+      id: VEHICLE_ARROW_LAYER_ID,
+      type: "symbol",
+      source: VEHICLE_SOURCE_ID,
+      filter: ["==", ["get", "hasBearing"], true],
+      layout: {
+        "icon-image": VEHICLE_ARROW_IMAGE_ID,
+        "icon-size": [
+          "interpolate",
+          ["linear"],
+          ["zoom"],
+          4,
+          0.38,
+          8,
+          0.52,
+          12,
+          0.72
+        ],
+        "icon-rotate": ["-", ["coalesce", ["get", "bearing"], 90], 90],
+        "icon-rotation-alignment": "map",
+        "icon-allow-overlap": true,
+        "icon-ignore-placement": true
+      },
+      paint: {
+        "icon-opacity": 0.96
+      }
     });
   }
 
+  if (!configuredVehicleEventMaps.has(map)) {
+    for (const layerId of [VEHICLE_DOT_LAYER_ID, VEHICLE_ARROW_LAYER_ID]) {
+      map.on("mouseenter", layerId, () => {
+        map.getCanvas().style.cursor = "pointer";
+      });
+
+      map.on("mousemove", layerId, (event: MapLayerMouseEvent) => {
+        const feature = event.features?.[0];
+        const label = feature?.properties?.label;
+        if (!label) return;
+
+        if (!hoverPopupRef.current) {
+          hoverPopupRef.current = new maplibregl.Popup({
+            closeButton: false,
+            closeOnClick: false,
+            offset: 16,
+            className: "vehicle-hover-popup"
+          });
+        }
+
+        hoverPopupRef.current
+          .setLngLat(event.lngLat)
+          .setHTML(`<span>${escapeHtml(String(label))}</span>`)
+          .addTo(map);
+      });
+
+      map.on("mouseleave", layerId, () => {
+        map.getCanvas().style.cursor = "";
+        hoverPopupRef.current?.remove();
+      });
+
+      map.on("click", layerId, (event: MapLayerMouseEvent) => {
+        const feature = event.features?.[0];
+        if (!feature?.properties) return;
+        setSelectedVehicle(feature.properties as Vehicle);
+      });
+    }
+
+    configuredVehicleEventMaps.add(map);
+  }
+
   setVehicleSourceData(map, data);
+}
+
+function ensureSelectedTripLayers(
+  map: MapLibreMap,
+  routeData: SelectedRouteFeatureCollection,
+  stopData: SelectedStopsFeatureCollection
+) {
+  if (!map.getSource(SELECTED_ROUTE_SOURCE_ID)) {
+    map.addSource(SELECTED_ROUTE_SOURCE_ID, {
+      type: "geojson",
+      data: routeData
+    });
+  }
+
+  if (!map.getSource(SELECTED_STOPS_SOURCE_ID)) {
+    map.addSource(SELECTED_STOPS_SOURCE_ID, {
+      type: "geojson",
+      data: stopData
+    });
+  }
+
+  if (!map.getLayer(SELECTED_ROUTE_HALO_LAYER_ID)) {
+    map.addLayer({
+      id: SELECTED_ROUTE_HALO_LAYER_ID,
+      type: "line",
+      source: SELECTED_ROUTE_SOURCE_ID,
+      layout: {
+        "line-cap": "round",
+        "line-join": "round"
+      },
+      paint: {
+        "line-color": "#ffffff",
+        "line-width": [
+          "interpolate",
+          ["linear"],
+          ["zoom"],
+          4,
+          5,
+          10,
+          9,
+          14,
+          13
+        ],
+        "line-opacity": 0.78
+      }
+    });
+  }
+
+  if (!map.getLayer(SELECTED_ROUTE_LAYER_ID)) {
+    map.addLayer({
+      id: SELECTED_ROUTE_LAYER_ID,
+      type: "line",
+      source: SELECTED_ROUTE_SOURCE_ID,
+      layout: {
+        "line-cap": "round",
+        "line-join": "round"
+      },
+      paint: {
+        "line-color": ["get", "color"],
+        "line-width": [
+          "interpolate",
+          ["linear"],
+          ["zoom"],
+          4,
+          2.4,
+          10,
+          4.8,
+          14,
+          7
+        ],
+        "line-opacity": 0.82
+      }
+    });
+  }
+
+  if (!map.getLayer(SELECTED_STOP_LAYER_ID)) {
+    map.addLayer({
+      id: SELECTED_STOP_LAYER_ID,
+      type: "circle",
+      source: SELECTED_STOPS_SOURCE_ID,
+      paint: {
+        "circle-radius": [
+          "case",
+          ["get", "next"],
+          7,
+          ["get", "upcoming"],
+          5,
+          3.5
+        ],
+        "circle-color": [
+          "case",
+          ["get", "next"],
+          "#111827",
+          ["get", "upcoming"],
+          ["get", "color"],
+          "#ffffff"
+        ],
+        "circle-stroke-color": ["get", "color"],
+        "circle-stroke-width": [
+          "case",
+          ["get", "next"],
+          3,
+          2
+        ],
+        "circle-opacity": 0.96
+      }
+    });
+  }
+
+  if (!map.getLayer(SELECTED_STOP_LABEL_LAYER_ID)) {
+    map.addLayer({
+      id: SELECTED_STOP_LABEL_LAYER_ID,
+      type: "symbol",
+      source: SELECTED_STOPS_SOURCE_ID,
+      minzoom: 9,
+      layout: {
+        "text-field": ["coalesce", ["get", "name"], ["get", "id"]],
+        "text-size": 11,
+        "text-offset": [0, 1.05],
+        "text-anchor": "top",
+        "text-allow-overlap": false,
+        "text-ignore-placement": false
+      },
+      paint: {
+        "text-color": "#111827",
+        "text-halo-color": "#ffffff",
+        "text-halo-width": 1.4
+      }
+    });
+  }
+
+  setSelectedTripSourceData(map, routeData, stopData);
+}
+
+function ensureVehicleArrowImage(map: MapLibreMap) {
+  if (map.hasImage(VEHICLE_ARROW_IMAGE_ID)) return;
+
+  const size = 64;
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const context = canvas.getContext("2d");
+  if (!context) return;
+
+  context.translate(size / 2, size / 2);
+  context.beginPath();
+  context.moveTo(25, 0);
+  context.lineTo(-22, -22);
+  context.lineTo(-10, 0);
+  context.lineTo(-22, 22);
+  context.closePath();
+  context.lineJoin = "round";
+  context.lineWidth = 7;
+  context.strokeStyle = "rgba(255, 255, 255, 0.9)";
+  context.stroke();
+  context.fillStyle = "#050505";
+  context.fill();
+
+  map.addImage(VEHICLE_ARROW_IMAGE_ID, context.getImageData(0, 0, size, size), {
+    pixelRatio: 2
+  });
+}
+
+function setSelectedTripSourceData(
+  map: MapLibreMap | null,
+  routeData: SelectedRouteFeatureCollection,
+  stopData: SelectedStopsFeatureCollection
+) {
+  if (!map?.isStyleLoaded()) return;
+  const routeSource = map.getSource(SELECTED_ROUTE_SOURCE_ID) as GeoJSONSource | undefined;
+  const stopSource = map.getSource(SELECTED_STOPS_SOURCE_ID) as GeoJSONSource | undefined;
+  routeSource?.setData(routeData);
+  stopSource?.setData(stopData);
 }
 
 function setVehicleSourceData(
@@ -855,4 +1458,22 @@ function loadAll(
 
 function hasRateLimitedStatus(statuses?: FeedStatus[]) {
   return statuses?.some((status) => status.status === "rate_limited") ?? false;
+}
+
+function isValidLineCoordinate(coordinate: [number, number]) {
+  return (
+    Array.isArray(coordinate) &&
+    coordinate.length === 2 &&
+    Number.isFinite(coordinate[0]) &&
+    Number.isFinite(coordinate[1])
+  );
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
 }
