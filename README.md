@@ -38,8 +38,11 @@ Rekommenderat hobbyupplägg:
 Lokalt används `.env.local`:
 
 ```bash
-TRAFIKLAB_API_KEY=din-trafiklab-nyckel
+TRAFIKLAB_REALTIME_API_KEY=din-realtime-nyckel
+TRAFIKLAB_STATIC_API_KEY=din-static-nyckel
 ```
+
+`TRAFIKLAB_API_KEY` fungerar fortfarande som fallback för realtime, men använd helst det tydligare namnet `TRAFIKLAB_REALTIME_API_KEY` i Vercel så realtime- och static-nycklar inte blandas ihop.
 
 ## Trafiklab-kvot
 

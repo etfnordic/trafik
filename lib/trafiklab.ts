@@ -104,6 +104,7 @@ export type OperatorSummary = {
 export type VehiclesResponse = {
   generatedAt: string;
   hasApiKey: boolean;
+  keySource: string | null;
   total: number;
   vehicles: Vehicle[];
   operators: OperatorSummary[];
@@ -114,6 +115,7 @@ export type VehiclesResponse = {
 export type TripUpdatesResponse = {
   generatedAt: string;
   hasApiKey: boolean;
+  keySource: string | null;
   total: number;
   tripUpdates: TripUpdate[];
   statuses: FeedStatus[];
@@ -123,6 +125,7 @@ export type TripUpdatesResponse = {
 export type AlertsResponse = {
   generatedAt: string;
   hasApiKey: boolean;
+  keySource: string | null;
   total: number;
   alerts: TrafficAlert[];
   statuses: FeedStatus[];
@@ -188,12 +191,14 @@ const caches: Record<FeedKind, Map<OperatorId, FeedCache<unknown>>> = {
 };
 
 export async function getVehiclePositions(): Promise<VehiclesResponse> {
+  const keyInfo = getRealtimeApiKey();
   const results = await getFeedResults("vehicles", normalizeVehicles);
   const vehicles = results.flatMap((result) => result.items);
 
   return {
     generatedAt: new Date().toISOString(),
-    hasApiKey: Boolean(process.env.TRAFIKLAB_API_KEY),
+    hasApiKey: Boolean(keyInfo.value),
+    keySource: keyInfo.source,
     total: vehicles.length,
     vehicles,
     operators: buildOperatorSummaries({ vehicles: results }),
@@ -204,12 +209,14 @@ export async function getVehiclePositions(): Promise<VehiclesResponse> {
 }
 
 export async function getTripUpdates(): Promise<TripUpdatesResponse> {
+  const keyInfo = getRealtimeApiKey();
   const results = await getFeedResults("tripUpdates", normalizeTripUpdates);
   const tripUpdates = results.flatMap((result) => result.items);
 
   return {
     generatedAt: new Date().toISOString(),
-    hasApiKey: Boolean(process.env.TRAFIKLAB_API_KEY),
+    hasApiKey: Boolean(keyInfo.value),
+    keySource: keyInfo.source,
     total: tripUpdates.length,
     tripUpdates,
     statuses: results.map((result) => result.status),
@@ -219,12 +226,14 @@ export async function getTripUpdates(): Promise<TripUpdatesResponse> {
 }
 
 export async function getServiceAlerts(): Promise<AlertsResponse> {
+  const keyInfo = getRealtimeApiKey();
   const results = await getFeedResults("alerts", normalizeAlerts);
   const alerts = results.flatMap((result) => result.items);
 
   return {
     generatedAt: new Date().toISOString(),
-    hasApiKey: Boolean(process.env.TRAFIKLAB_API_KEY),
+    hasApiKey: Boolean(keyInfo.value),
+    keySource: keyInfo.source,
     total: alerts.length,
     alerts,
     statuses: results.map((result) => result.status),
@@ -240,7 +249,7 @@ async function getFeedResults<T>(
     operator: OperatorConfig
   ) => T[]
 ): Promise<Array<FeedResult<T>>> {
-  const apiKey = process.env.TRAFIKLAB_API_KEY;
+  const { value: apiKey } = getRealtimeApiKey();
   const operators = OPERATORS.filter((operator) => operator.supports[feed]);
 
   if (!apiKey) {
@@ -618,8 +627,34 @@ async function safeErrorMessage(response: Response) {
   try {
     const text = await response.text();
     if (!text) return response.statusText;
-    return text.slice(0, 240);
+    return redactSecrets(text).slice(0, 240);
   } catch {
     return response.statusText;
   }
+}
+
+function getRealtimeApiKey(): { value: string | undefined; source: string | null } {
+  const candidates = [
+    ["TRAFIKLAB_REALTIME_API_KEY", process.env.TRAFIKLAB_REALTIME_API_KEY],
+    ["TRAFIKLAB_API_KEY", process.env.TRAFIKLAB_API_KEY]
+  ] as const;
+  const match = candidates.find(([, value]) => Boolean(value?.trim()));
+
+  return {
+    value: match?.[1]?.trim(),
+    source: match?.[0] ?? null
+  };
+}
+
+function redactSecrets(text: string) {
+  const knownSecrets = [
+    process.env.TRAFIKLAB_REALTIME_API_KEY,
+    process.env.TRAFIKLAB_STATIC_API_KEY,
+    process.env.TRAFIKLAB_API_KEY
+  ].filter((value): value is string => Boolean(value));
+
+  return knownSecrets
+    .reduce((sanitized, secret) => sanitized.replaceAll(secret, "[redacted]"), text)
+    .replace(/Key '[^']+'/gi, "Key '[redacted]'")
+    .replace(/[a-f0-9]{24,}/gi, "[redacted]");
 }

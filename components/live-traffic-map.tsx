@@ -469,14 +469,16 @@ function FeedHealth({
 }) {
   const healthy = statuses?.filter((status) => status.status === "ok" || status.status === "not_modified").length ?? 0;
   const total = statuses?.length ?? 0;
-  const errors = statuses?.filter((status) => status.status === "error").length ?? 0;
+  const errorStatuses = statuses?.filter((status) => status.status === "error") ?? [];
+  const errors = errorStatuses.length;
   const missingKey = statuses?.some((status) => status.status === "missing_key") ?? false;
+  const firstError = errorStatuses.find((status) => status.message)?.message;
 
   return (
     <div className="feed-health">
       <div>
         <strong>{label}</strong>
-        <span>{seconds}s cache/polling</span>
+        <span>{firstError ?? `${seconds}s cache/polling`}</span>
       </div>
       <small>
         {loading && total === 0

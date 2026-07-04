@@ -240,12 +240,22 @@ h2 {
   display: block;
 }
 
+.feed-health div {
+  min-width: 0;
+}
+
 .feed-health span,
 .traffic-alert span,
 .feed-health small,
 .traffic-alert small {
   color: var(--muted);
   font-size: 0.78rem;
+}
+
+.feed-health span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .feed-health small,
