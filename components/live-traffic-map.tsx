@@ -1,7 +1,5 @@
 "use client";
 
-import "maplibre-gl/dist/maplibre-gl.css";
-
 import {
   AlertTriangle,
   Bus,
@@ -84,7 +82,10 @@ const vehicleTypeLabels: Record<Vehicle["vehicleType"], string> = {
 export default function LiveTrafficMap() {
   const mapNodeRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
+  const pendingVehicleDataRef = useRef<VehicleFeatureCollection>(emptyFeatureCollection());
   const operatorsInitializedRef = useRef(false);
+  const [mapReady, setMapReady] = useState(false);
+  const [mapError, setMapError] = useState<string | null>(null);
   const [activeOperators, setActiveOperators] = useState<Set<string>>(new Set());
   const [selectedVehicle, setSelectedVehicle] = useState<Vehicle | null>(null);
   const [vehicleState, setVehicleState] = useState<ResourceState<VehiclesResponse>>({
@@ -195,63 +196,31 @@ export default function LiveTrafficMap() {
       "bottom-right"
     );
 
-    map.on("load", () => {
-      map.addSource(VEHICLE_SOURCE_ID, {
-        type: "geojson",
-        data: emptyFeatureCollection()
-      });
+    const markMapReady = () => {
+      ensureVehicleLayer(map, pendingVehicleDataRef.current, setSelectedVehicle);
+      map.resize();
+      setMapReady(true);
+      setMapError(null);
+    };
 
-      map.addLayer({
-        id: VEHICLE_LAYER_ID,
-        type: "circle",
-        source: VEHICLE_SOURCE_ID,
-        paint: {
-          "circle-radius": [
-            "interpolate",
-            ["linear"],
-            ["zoom"],
-            4,
-            4,
-            8,
-            6,
-            12,
-            9
-          ],
-          "circle-color": ["get", "color"],
-          "circle-stroke-width": [
-            "case",
-            [">", ["coalesce", ["get", "delaySeconds"], 0], 300],
-            4,
-            2
-          ],
-          "circle-stroke-color": [
-            "case",
-            [">", ["coalesce", ["get", "delaySeconds"], 0], 300],
-            "#b91c1c",
-            "#ffffff"
-          ],
-          "circle-opacity": 0.94
-        }
-      });
+    map.once("style.load", markMapReady);
+    map.once("load", markMapReady);
 
-      map.on("mouseenter", VEHICLE_LAYER_ID, () => {
-        map.getCanvas().style.cursor = "pointer";
-      });
+    const fallbackReadyTimer = window.setTimeout(() => {
+      if (map.isStyleLoaded()) {
+        markMapReady();
+      }
+    }, 2500);
 
-      map.on("mouseleave", VEHICLE_LAYER_ID, () => {
-        map.getCanvas().style.cursor = "";
-      });
-
-      map.on("click", VEHICLE_LAYER_ID, (event: MapLayerMouseEvent) => {
-        const feature = event.features?.[0];
-        if (!feature?.properties) return;
-        setSelectedVehicle(feature.properties as Vehicle);
-      });
+    map.on("error", (event) => {
+      const message = event.error?.message ?? "Kartan kunde inte laddas.";
+      setMapError(message);
     });
 
     mapRef.current = map;
 
     return () => {
+      window.clearTimeout(fallbackReadyTimer);
       map.remove();
       mapRef.current = null;
     };
@@ -274,10 +243,10 @@ export default function LiveTrafficMap() {
   }, [activeOperators, vehicleState.data?.vehicles]);
 
   useEffect(() => {
-    const source = mapRef.current?.getSource(VEHICLE_SOURCE_ID) as GeoJSONSource | undefined;
-    if (!source) return;
-    source.setData(toFeatureCollection(visibleVehicles, tripUpdatesByTripId));
-  }, [tripUpdatesByTripId, visibleVehicles]);
+    const featureCollection = toFeatureCollection(visibleVehicles, tripUpdatesByTripId);
+    pendingVehicleDataRef.current = featureCollection;
+    setVehicleSourceData(mapRef.current, featureCollection);
+  }, [mapReady, tripUpdatesByTripId, visibleVehicles]);
 
   const activeAlerts = useMemo(
     () => (alertState.data?.alerts ?? []).filter(isAlertActive),
@@ -332,6 +301,11 @@ export default function LiveTrafficMap() {
   return (
     <main className="app-shell">
       <div ref={mapNodeRef} className="map-canvas" aria-label="Livekarta över kollektivtrafik" />
+      {!mapReady ? (
+        <div className="map-loading" role="status">
+          {mapError ? `Kartfel: ${mapError}` : "Laddar karta..."}
+        </div>
+      ) : null}
 
       <section className="control-panel" aria-label="Realtidsinformation">
         <div className="panel-header">
@@ -706,6 +680,79 @@ function emptyFeatureCollection(): VehicleFeatureCollection {
     type: "FeatureCollection",
     features: []
   };
+}
+
+function ensureVehicleLayer(
+  map: MapLibreMap,
+  data: VehicleFeatureCollection,
+  setSelectedVehicle: (vehicle: Vehicle) => void
+) {
+  if (!map.getSource(VEHICLE_SOURCE_ID)) {
+    map.addSource(VEHICLE_SOURCE_ID, {
+      type: "geojson",
+      data
+    });
+  }
+
+  if (!map.getLayer(VEHICLE_LAYER_ID)) {
+    map.addLayer({
+      id: VEHICLE_LAYER_ID,
+      type: "circle",
+      source: VEHICLE_SOURCE_ID,
+      paint: {
+        "circle-radius": [
+          "interpolate",
+          ["linear"],
+          ["zoom"],
+          4,
+          4,
+          8,
+          6,
+          12,
+          9
+        ],
+        "circle-color": ["get", "color"],
+        "circle-stroke-width": [
+          "case",
+          [">", ["coalesce", ["get", "delaySeconds"], 0], 300],
+          4,
+          2
+        ],
+        "circle-stroke-color": [
+          "case",
+          [">", ["coalesce", ["get", "delaySeconds"], 0], 300],
+          "#b91c1c",
+          "#ffffff"
+        ],
+        "circle-opacity": 0.94
+      }
+    });
+
+    map.on("mouseenter", VEHICLE_LAYER_ID, () => {
+      map.getCanvas().style.cursor = "pointer";
+    });
+
+    map.on("mouseleave", VEHICLE_LAYER_ID, () => {
+      map.getCanvas().style.cursor = "";
+    });
+
+    map.on("click", VEHICLE_LAYER_ID, (event: MapLayerMouseEvent) => {
+      const feature = event.features?.[0];
+      if (!feature?.properties) return;
+      setSelectedVehicle(feature.properties as Vehicle);
+    });
+  }
+
+  setVehicleSourceData(map, data);
+}
+
+function setVehicleSourceData(
+  map: MapLibreMap | null,
+  data: VehicleFeatureCollection
+) {
+  if (!map?.isStyleLoaded()) return;
+  const source = map.getSource(VEHICLE_SOURCE_ID) as GeoJSONSource | undefined;
+  source?.setData(data);
 }
 
 function loadAll(
