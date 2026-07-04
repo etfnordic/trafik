@@ -21,7 +21,13 @@ export type OperatorId =
   | "vastmanland"
   | "xt";
 
-export type FeedStatusValue = "ok" | "not_modified" | "error" | "missing_key" | "unavailable";
+export type FeedStatusValue =
+  | "ok"
+  | "not_modified"
+  | "error"
+  | "missing_key"
+  | "rate_limited"
+  | "unavailable";
 
 export type FeedStatus = {
   operatorId: OperatorId;
@@ -129,6 +135,7 @@ export type OperatorSummary = {
   tripUpdateCount: number;
   alertCount: number;
   statuses: Record<FeedKind, FeedStatusValue>;
+  messages: Record<FeedKind, string | null>;
 };
 
 export type VehiclesResponse = {
@@ -347,18 +354,34 @@ async function fetchOperatorFeed<T>(
     }
 
     if (!response.ok) {
+      if (response.status === 404) {
+        return {
+          operator,
+          items: cache?.items ?? [],
+          status: buildStatus(operator, feed, "unavailable", cache?.items.length ?? 0, cache?.updatedAt ?? null, {
+            httpStatus: response.status,
+            message: "Feeden finns inte hos Trafiklab just nu."
+          })
+        };
+      }
+
+      const message = await safeErrorMessage(response);
+      const status = response.status === 429 || isQuotaExceededMessage(message)
+        ? "rate_limited"
+        : "error";
+
       return {
         operator,
         items: cache?.items ?? [],
         status: buildStatus(
           operator,
           feed,
-          "error",
+          status,
           cache?.items.length ?? 0,
           cache?.updatedAt ?? null,
           {
             httpStatus: response.status,
-            message: await safeErrorMessage(response)
+            message
           }
         )
       };
@@ -636,6 +659,11 @@ function buildOperatorSummaries(results: {
         alerts: operator.supports.alerts
           ? alertResult?.status.status ?? "unavailable"
           : "unavailable"
+      },
+      messages: {
+        vehicles: vehicleResult?.status.message ?? null,
+        tripUpdates: tripUpdateResult?.status.message ?? null,
+        alerts: alertResult?.status.message ?? null
       }
     };
   });
@@ -782,7 +810,11 @@ async function safeErrorMessage(response: Response) {
   try {
     const text = await response.text();
     if (!text) return response.statusText;
-    return redactSecrets(text).slice(0, 240);
+    const sanitized = redactSecrets(text);
+    if (isQuotaExceededMessage(sanitized)) {
+      return "Trafiklab-kvoten är slut eller minutgränsen är nådd.";
+    }
+    return humanizeTrafiklabError(sanitized).slice(0, 240);
   } catch {
     return response.statusText;
   }
@@ -812,4 +844,17 @@ function redactSecrets(text: string) {
     .reduce((sanitized, secret) => sanitized.replaceAll(secret, "[redacted]"), text)
     .replace(/Key '[^']+'/gi, "Key '[redacted]'")
     .replace(/[a-f0-9]{24,}/gi, "[redacted]");
+}
+
+function isQuotaExceededMessage(text: string) {
+  return /exceeded its quota|quota exceeded|rate limit|too many requests|kvot|minutgräns/i.test(text);
+}
+
+function humanizeTrafiklabError(text: string) {
+  try {
+    const parsed = JSON.parse(text) as { errorMessage?: string; message?: string };
+    return parsed.errorMessage ?? parsed.message ?? text;
+  } catch {
+    return text;
+  }
 }

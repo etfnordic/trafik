@@ -410,6 +410,14 @@ h2 {
   background: var(--blue);
 }
 
+.status-dot.rate_limited {
+  background: var(--amber);
+}
+
+.status-dot.unavailable {
+  background: #94a3b8;
+}
+
 .status-dot.error,
 .status-dot.missing_key {
   background: var(--red);

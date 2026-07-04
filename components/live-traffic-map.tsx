@@ -52,6 +52,7 @@ const VEHICLE_LAYER_ID = "vehicle-points";
 const VEHICLE_REFRESH_MS = 3000;
 const TRIP_UPDATE_REFRESH_MS = 20000;
 const ALERT_REFRESH_MS = 60000;
+const RATE_LIMIT_BACKOFF_MS = 60000;
 
 const operatorColors: Record<string, string> = {
   blekinge: "#0891b2",
@@ -105,6 +106,16 @@ export default function LiveTrafficMap() {
     data: null
   });
 
+  const vehicleRefreshMs = hasRateLimitedStatus(vehicleState.data?.statuses)
+    ? RATE_LIMIT_BACKOFF_MS
+    : VEHICLE_REFRESH_MS;
+  const tripUpdateRefreshMs = hasRateLimitedStatus(tripUpdateState.data?.statuses)
+    ? RATE_LIMIT_BACKOFF_MS
+    : TRIP_UPDATE_REFRESH_MS;
+  const alertRefreshMs = hasRateLimitedStatus(alertState.data?.statuses)
+    ? RATE_LIMIT_BACKOFF_MS
+    : ALERT_REFRESH_MS;
+
   const loadVehicles = useCallback(async () => {
     try {
       const response = await fetch("/api/vehicles", { cache: "no-store" });
@@ -152,21 +163,21 @@ export default function LiveTrafficMap() {
 
   useEffect(() => {
     void loadVehicles();
-    const interval = window.setInterval(() => void loadVehicles(), VEHICLE_REFRESH_MS);
+    const interval = window.setInterval(() => void loadVehicles(), vehicleRefreshMs);
     return () => window.clearInterval(interval);
-  }, [loadVehicles]);
+  }, [loadVehicles, vehicleRefreshMs]);
 
   useEffect(() => {
     void loadTripUpdates();
-    const interval = window.setInterval(() => void loadTripUpdates(), TRIP_UPDATE_REFRESH_MS);
+    const interval = window.setInterval(() => void loadTripUpdates(), tripUpdateRefreshMs);
     return () => window.clearInterval(interval);
-  }, [loadTripUpdates]);
+  }, [loadTripUpdates, tripUpdateRefreshMs]);
 
   useEffect(() => {
     void loadAlerts();
-    const interval = window.setInterval(() => void loadAlerts(), ALERT_REFRESH_MS);
+    const interval = window.setInterval(() => void loadAlerts(), alertRefreshMs);
     return () => window.clearInterval(interval);
-  }, [loadAlerts]);
+  }, [alertRefreshMs, loadAlerts]);
 
   useEffect(() => {
     const operators = vehicleState.data?.operators ?? [];
@@ -447,22 +458,32 @@ function FeedHealth({
   const healthy = statuses?.filter((status) => status.status === "ok" || status.status === "not_modified").length ?? 0;
   const total = statuses?.length ?? 0;
   const errorStatuses = statuses?.filter((status) => status.status === "error") ?? [];
+  const rateLimitedStatuses = statuses?.filter((status) => status.status === "rate_limited") ?? [];
+  const unavailableStatuses = statuses?.filter((status) => status.status === "unavailable") ?? [];
   const errors = errorStatuses.length;
+  const rateLimited = rateLimitedStatuses.length;
+  const unavailable = unavailableStatuses.length;
   const missingKey = statuses?.some((status) => status.status === "missing_key") ?? false;
-  const firstError = errorStatuses.find((status) => status.message)?.message;
+  const firstIssue = [...rateLimitedStatuses, ...errorStatuses, ...unavailableStatuses].find((status) => status.message)?.message;
+  const summary = [
+    `${healthy}/${total} OK`,
+    rateLimited ? `${rateLimited} kvot` : null,
+    unavailable ? `${unavailable} saknas` : null,
+    errors ? `${errors} fel` : null
+  ].filter(Boolean).join(", ");
 
   return (
     <div className="feed-health">
       <div>
         <strong>{label}</strong>
-        <span>{firstError ?? `${seconds}s cache/polling`}</span>
+        <span>{firstIssue ?? `${seconds}s cache/polling`}</span>
       </div>
       <small>
         {loading && total === 0
           ? "Hämtar..."
           : missingKey
             ? "API-nyckel saknas"
-            : `${healthy}/${total} OK${errors ? `, ${errors} fel` : ""}`}
+            : summary}
       </small>
     </div>
   );
@@ -616,7 +637,9 @@ function LegendItem({ icon, label }: { icon: React.ReactNode; label: string }) {
 function operatorStatusText(operator: OperatorSummary) {
   if (!operator.supports.vehicles) return "Ingen fordonsfeed";
   if (operator.statuses.vehicles === "missing_key") return "Väntar på API-nyckel";
-  if (operator.statuses.vehicles === "error") return "Fel vid hämtning";
+  if (operator.statuses.vehicles === "rate_limited") return "Kvot nådd";
+  if (operator.statuses.vehicles === "unavailable") return "Ingen feed just nu";
+  if (operator.statuses.vehicles === "error") return operator.messages.vehicles ?? "Fel vid hämtning";
   if (operator.statuses.vehicles === "not_modified") return `${operator.vehicleCount} fordon, oförändrat`;
   return `${operator.vehicleCount} fordon`;
 }
@@ -809,4 +832,8 @@ function loadAll(
   loadAlerts: () => Promise<void>
 ) {
   return Promise.all([loadVehicles(), loadTripUpdates(), loadAlerts()]);
+}
+
+function hasRateLimitedStatus(statuses?: FeedStatus[]) {
+  return statuses?.some((status) => status.status === "rate_limited") ?? false;
 }
