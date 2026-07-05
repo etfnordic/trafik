@@ -23,11 +23,13 @@ jobs:
       - name: Download GTFS Sweden 3 static feed
         env:
           TRAFIKLAB_STATIC_API_KEY: ${{ secrets.TRAFIKLAB_STATIC_API_KEY }}
+          TRAFIKLAB__STATIC_API_KEY: ${{ secrets.TRAFIKLAB__STATIC_API_KEY }}
         run: |
-          test -n "$TRAFIKLAB_STATIC_API_KEY"
+          STATIC_API_KEY="${TRAFIKLAB_STATIC_API_KEY:-$TRAFIKLAB__STATIC_API_KEY}"
+          test -n "$STATIC_API_KEY"
           mkdir -p .cache/gtfs-sweden
           curl --fail --silent --show-error --location \
-            "https://opendata.samtrafiken.se/gtfs-sweden/sweden.zip?key=${TRAFIKLAB_STATIC_API_KEY}" \
+            "https://opendata.samtrafiken.se/gtfs-sweden/sweden.zip?key=${STATIC_API_KEY}" \
             --output /tmp/sweden.zip
           unzip -q -o /tmp/sweden.zip agency.txt routes.txt trips.txt stops.txt stop_times.txt shapes.txt -d .cache/gtfs-sweden
 

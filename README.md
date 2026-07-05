@@ -101,6 +101,7 @@ Det gör följande:
 4. Committar de kompakta metadatafilerna om de ändrats.
 
 Static-nyckeln används bara i GitHub Actions. De färdiga metadatafilerna är publika och innehåller inga hemligheter.
+Workflowet accepterar även `TRAFIKLAB__STATIC_API_KEY` som fallback om secreten råkar skapas med dubbel underscore, men rekommenderat namn är `TRAFIKLAB_STATIC_API_KEY`.
 
 ## Trafiklab-kvot
 
@@ -113,7 +114,7 @@ Realtime är annorlunda. Appen skickar bara realtime-anrop när någon faktiskt 
 - ServiceAlerts: cirka 16 requests/minut.
 - Totalt: cirka 364 requests/minut.
 
-Separata realtime-nycklar per operatör gör att belastningen kan spridas över flera Trafiklab-nycklar. Appen letar först efter `TRAFIKLAB_REALTIME_API_KEY_{OPERATOR}`, och använder sedan `TRAFIKLAB_REALTIME_API_KEY` som fallback.
+Separata realtime-nycklar per operatör gör att belastningen kan spridas över flera Trafiklab-nycklar. Appen letar först efter `TRAFIKLAB_REALTIME_API_KEY_{OPERATOR}`, och använder sedan `TRAFIKLAB_REALTIME_API_KEY` som fallback. Alla operatörer som har VehiclePositions är valda från start.
 
 ## Kom igång lokalt
 

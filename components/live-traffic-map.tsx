@@ -119,8 +119,24 @@ const VEHICLE_REFRESH_MS = 3000;
 const TRIP_UPDATE_REFRESH_MS = 20000;
 const ALERT_REFRESH_MS = 60000;
 const RATE_LIMIT_BACKOFF_MS = 60000;
-const FAST_OPERATOR_LIMIT = 2;
-const DEFAULT_ACTIVE_OPERATORS = ["sl"] as const;
+const DEFAULT_ACTIVE_OPERATORS = [
+  "sl",
+  "ul",
+  "otraf",
+  "jlt",
+  "krono",
+  "klt",
+  "gotland",
+  "blekinge",
+  "skane",
+  "halland",
+  "varm",
+  "orebro",
+  "vastmanland",
+  "dt",
+  "xt",
+  "dintur"
+] as const;
 const configuredVehicleEventMaps = new WeakSet<MapLibreMap>();
 
 const operatorColors: Record<string, string> = {
@@ -188,25 +204,18 @@ export default function LiveTrafficMap() {
     () => [...activeOperators].sort().join(","),
     [activeOperators]
   );
-  const broadOperatorSelection = activeOperators.size > FAST_OPERATOR_LIMIT;
   const apiUrl = useCallback(
     (path: string) => `${path}?operators=${encodeURIComponent(activeOperatorQuery)}`,
     [activeOperatorQuery]
   );
   const vehicleRefreshMs = hasRateLimitedStatus(vehicleState.data?.statuses)
     ? RATE_LIMIT_BACKOFF_MS
-    : broadOperatorSelection
-      ? RATE_LIMIT_BACKOFF_MS
     : VEHICLE_REFRESH_MS;
   const tripUpdateRefreshMs = hasRateLimitedStatus(tripUpdateState.data?.statuses)
     ? RATE_LIMIT_BACKOFF_MS
-    : broadOperatorSelection
-      ? RATE_LIMIT_BACKOFF_MS
     : TRIP_UPDATE_REFRESH_MS;
   const alertRefreshMs = hasRateLimitedStatus(alertState.data?.statuses)
     ? RATE_LIMIT_BACKOFF_MS
-    : broadOperatorSelection
-      ? RATE_LIMIT_BACKOFF_MS
     : ALERT_REFRESH_MS;
 
   const loadVehicles = useCallback(async () => {
@@ -520,13 +529,6 @@ export default function LiveTrafficMap() {
           <Notice
             tone="warning"
             text="Lägg TRAFIKLAB_API_KEY i .env.local lokalt och som environment variable i Vercel för live-data."
-          />
-        ) : null}
-
-        {broadOperatorSelection ? (
-          <Notice
-            tone="warning"
-            text="Fler än två operatörer är valda. Polling sänks till 60 sekunder för att hålla nere Trafiklab-anropen."
           />
         ) : null}
 
