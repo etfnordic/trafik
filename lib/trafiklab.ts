@@ -219,7 +219,7 @@ export const OPERATORS: OperatorConfig[] = [
   { id: "gotland", name: "Gotland", supports: support(true, true, true) },
   { id: "blekinge", name: "Blekingetrafiken", supports: support(true, true, true) },
   { id: "skane", name: "Skånetrafiken", supports: support(true, true, true) },
-  { id: "halland", name: "Hallandstrafiken", supports: support(false, true, true) },
+  { id: "halland", name: "Hallandstrafiken", supports: support(true, false, false) },
   { id: "varm", name: "Värmlandstrafiken", supports: support(true, true, true) },
   { id: "orebro", name: "Länstrafiken Örebro", supports: support(true, true, true) },
   { id: "vastmanland", name: "Västmanlands Lokaltrafik", supports: support(true, true, true) },
