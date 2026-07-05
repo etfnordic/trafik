@@ -40,7 +40,6 @@ GTFS Sweden 3 Static används för att berika realtidsdatan med linjenamn, linje
 
 ```txt
 https://opendata.samtrafiken.se/gtfs-sweden/sweden.zip?key={apikey}
-https://opendata.samtrafiken.se/gtfs-sweden/sweden_extra.zip?key={apikey}
 ```
 
 Trafiklabs dokumentation: https://www.trafiklab.se/api/gtfs-datasets/gtfs-sweden/
@@ -51,7 +50,7 @@ Rekommenderat hobbyupplägg:
 
 1. Koden ligger på GitHub.
 2. Projektet importeras i Vercel Hobby.
-3. `TRAFIKLAB_REALTIME_API_KEY` läggs som Environment Variable i Vercel.
+3. `TRAFIKLAB_REALTIME_API_KEY` läggs som Environment Variable i Vercel, eller så läggs en separat realtime-nyckel per operatör.
 4. `TRAFIKLAB_STATIC_API_KEY` läggs som GitHub Actions secret.
 5. API-nycklar skickas aldrig till webbläsaren och ska inte committas till GitHub.
 
@@ -60,9 +59,35 @@ Lokalt används `.env.local`:
 ```bash
 TRAFIKLAB_REALTIME_API_KEY=din-realtime-nyckel
 TRAFIKLAB_STATIC_API_KEY=din-static-nyckel
+
+# Valfritt: separata realtime-nycklar per operatör.
+TRAFIKLAB_REALTIME_API_KEY_SL=din-sl-nyckel
+TRAFIKLAB_REALTIME_API_KEY_UL=din-ul-nyckel
+TRAFIKLAB_REALTIME_API_KEY_SKANE=din-skane-nyckel
 ```
 
-`TRAFIKLAB_API_KEY` fungerar fortfarande som fallback för realtime, men använd helst det tydligare namnet `TRAFIKLAB_REALTIME_API_KEY`.
+`TRAFIKLAB_API_KEY` fungerar fortfarande som global fallback för realtime, men använd helst det tydligare namnet `TRAFIKLAB_REALTIME_API_KEY`.
+
+Per-operatörsnycklar använder operator-id:t i versaler, till exempel:
+
+```txt
+TRAFIKLAB_REALTIME_API_KEY_SL
+TRAFIKLAB_REALTIME_API_KEY_UL
+TRAFIKLAB_REALTIME_API_KEY_SKANE
+TRAFIKLAB_REALTIME_API_KEY_OTRAF
+TRAFIKLAB_REALTIME_API_KEY_JLT
+TRAFIKLAB_REALTIME_API_KEY_KRONO
+TRAFIKLAB_REALTIME_API_KEY_KLT
+TRAFIKLAB_REALTIME_API_KEY_GOTLAND
+TRAFIKLAB_REALTIME_API_KEY_BLEKINGE
+TRAFIKLAB_REALTIME_API_KEY_HALLAND
+TRAFIKLAB_REALTIME_API_KEY_VARM
+TRAFIKLAB_REALTIME_API_KEY_OREBRO
+TRAFIKLAB_REALTIME_API_KEY_VASTMANLAND
+TRAFIKLAB_REALTIME_API_KEY_DT
+TRAFIKLAB_REALTIME_API_KEY_XT
+TRAFIKLAB_REALTIME_API_KEY_DINTUR
+```
 
 ## Daglig static-uppdatering
 
@@ -70,16 +95,16 @@ Workflowet `.github/workflows/update-gtfs-static.yml` körs varje dag och kan ä
 
 Det gör följande:
 
-1. Hämtar `sweden.zip` och `sweden_extra.zip` med `TRAFIKLAB_STATIC_API_KEY`.
-2. Packar bara upp `agency.txt`, `routes.txt`, `trips.txt`, `stops.txt` och `trips_dated_vehicle_journey.txt`.
-3. Bygger `data/gtfs-static/metadata.json.gz` med `scripts/build-gtfs-static.mjs`.
-4. Committar metadatafilen om den ändrats.
+1. Hämtar bara `sweden.zip` med `TRAFIKLAB_STATIC_API_KEY`.
+2. Packar bara upp `agency.txt`, `routes.txt`, `trips.txt`, `stops.txt`, `stop_times.txt` och `shapes.txt`.
+3. Bygger `data/gtfs-static/metadata.json.gz` och `data/gtfs-static/trip-details.json.gz` med `scripts/build-gtfs-static.mjs`.
+4. Committar de kompakta metadatafilerna om de ändrats.
 
-Static-nyckeln används bara i GitHub Actions. Den färdiga metadatafilen är publik och innehåller inga hemligheter. Extra-filen används endast för ett litet alias-index mellan realtime-id:n och GTFS `trip_id` för relevanta trafikdagar.
+Static-nyckeln används bara i GitHub Actions. De färdiga metadatafilerna är publika och innehåller inga hemligheter.
 
 ## Trafiklab-kvot
 
-Static-workflowet använder två static-anrop per körning eftersom både `sweden.zip` och `sweden_extra.zip` behövs. Med daglig körning blir det ungefär 60 anrop på 30 dagar, vilket passar din nuvarande Bronze-kvot om den ligger på 60 anrop per 30 dagar, men lämnar nästan ingen marginal för manuella workflow-körningar.
+Static-workflowet använder ett static-anrop per körning: `sweden.zip`. Med daglig körning blir det ungefär 30 anrop på 30 dagar, vilket lämnar marginal på Bronze-nivån.
 
 Realtime är annorlunda. Appen skickar bara realtime-anrop när någon faktiskt har sidan öppen, men en öppen karta som hämtar alla operatörer med 3/20/60-sekunders intervall kan ändå slå i Bronze-minutgränsen:
 
@@ -88,7 +113,7 @@ Realtime är annorlunda. Appen skickar bara realtime-anrop när någon faktiskt 
 - ServiceAlerts: cirka 16 requests/minut.
 - Totalt: cirka 364 requests/minut.
 
-Det är okej för första hobbytestet om sidan används sällan, men om du vill ha stabil drift med hela Sverige live behöver vi antingen högre gratisnivå hos Trafiklab eller ett Bronze-läge som begränsar operatörer/frekvens.
+Separata realtime-nycklar per operatör gör att belastningen kan spridas över flera Trafiklab-nycklar. Appen letar först efter `TRAFIKLAB_REALTIME_API_KEY_{OPERATOR}`, och använder sedan `TRAFIKLAB_REALTIME_API_KEY` som fallback.
 
 ## Kom igång lokalt
 

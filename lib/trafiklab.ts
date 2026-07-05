@@ -190,6 +190,11 @@ type FeedResult<T> = {
   status: FeedStatus;
 };
 
+type ApiKeyInfo = {
+  value: string | undefined;
+  source: string | null;
+};
+
 const BASE_URL = "https://opendata.samtrafiken.se/gtfs-rt-sweden";
 
 const FEED_FILES: Record<FeedKind, string> = {
@@ -230,14 +235,14 @@ const caches: Record<FeedKind, Map<OperatorId, FeedCache<unknown>>> = {
 };
 
 export async function getVehiclePositions(operatorIds?: string[]): Promise<VehiclesResponse> {
-  const keyInfo = getRealtimeApiKey();
+  const keyInfo = getRealtimeApiKeySummary(operatorIds, "vehicles");
   const staticMetadata = getStaticMetadata();
   const results = await getFeedResults("vehicles", normalizeVehicles, staticMetadata, operatorIds);
   const vehicles = results.flatMap((result) => result.items);
 
   return {
     generatedAt: new Date().toISOString(),
-    hasApiKey: Boolean(keyInfo.value),
+    hasApiKey: keyInfo.hasAnyKey,
     keySource: keyInfo.source,
     total: vehicles.length,
     vehicles,
@@ -250,14 +255,14 @@ export async function getVehiclePositions(operatorIds?: string[]): Promise<Vehic
 }
 
 export async function getTripUpdates(operatorIds?: string[]): Promise<TripUpdatesResponse> {
-  const keyInfo = getRealtimeApiKey();
+  const keyInfo = getRealtimeApiKeySummary(operatorIds, "tripUpdates");
   const staticMetadata = getStaticMetadata();
   const results = await getFeedResults("tripUpdates", normalizeTripUpdates, staticMetadata, operatorIds);
   const tripUpdates = results.flatMap((result) => result.items);
 
   return {
     generatedAt: new Date().toISOString(),
-    hasApiKey: Boolean(keyInfo.value),
+    hasApiKey: keyInfo.hasAnyKey,
     keySource: keyInfo.source,
     total: tripUpdates.length,
     tripUpdates,
@@ -269,13 +274,13 @@ export async function getTripUpdates(operatorIds?: string[]): Promise<TripUpdate
 }
 
 export async function getServiceAlerts(operatorIds?: string[]): Promise<AlertsResponse> {
-  const keyInfo = getRealtimeApiKey();
+  const keyInfo = getRealtimeApiKeySummary(operatorIds, "alerts");
   const results = await getFeedResults("alerts", normalizeAlerts, getStaticMetadata(), operatorIds);
   const alerts = results.flatMap((result) => result.items);
 
   return {
     generatedAt: new Date().toISOString(),
-    hasApiKey: Boolean(keyInfo.value),
+    hasApiKey: keyInfo.hasAnyKey,
     keySource: keyInfo.source,
     total: alerts.length,
     alerts,
@@ -295,7 +300,6 @@ async function getFeedResults<T>(
   staticMetadata = getStaticMetadata(),
   operatorIds?: string[]
 ): Promise<Array<FeedResult<T>>> {
-  const { value: apiKey } = getRealtimeApiKey();
   const requestedOperators = operatorIds
     ? new Set(operatorIds.map((operatorId) => operatorId.toLowerCase()))
     : null;
@@ -303,24 +307,28 @@ async function getFeedResults<T>(
     operator.supports[feed] && (!requestedOperators || requestedOperators.has(operator.id))
   );
 
-  if (!apiKey) {
-    return operators.map((operator) => ({
-      operator,
-      items: [],
-      status: {
-        operatorId: operator.id,
-        operatorName: operator.name,
-        feed,
-        status: "missing_key",
-        itemCount: 0,
-        updatedAt: null,
-        message: "TRAFIKLAB_API_KEY saknas."
-      }
-    }));
-  }
-
   return Promise.all(
-    operators.map((operator) => fetchOperatorFeed(operator, feed, apiKey, normalize, staticMetadata))
+    operators.map((operator) => {
+      const keyInfo = getRealtimeApiKey(operator.id);
+
+      if (!keyInfo.value) {
+        return {
+          operator,
+          items: [],
+          status: {
+            operatorId: operator.id,
+            operatorName: operator.name,
+            feed,
+            status: "missing_key" as const,
+            itemCount: 0,
+            updatedAt: null,
+            message: `Lägg TRAFIKLAB_REALTIME_API_KEY_${operator.id.toUpperCase()} eller TRAFIKLAB_REALTIME_API_KEY i environment variables.`
+          }
+        };
+      }
+
+      return fetchOperatorFeed(operator, feed, keyInfo.value, normalize, staticMetadata);
+    })
   );
 }
 
@@ -804,11 +812,22 @@ async function safeErrorMessage(response: Response) {
   }
 }
 
-function getRealtimeApiKey(): { value: string | undefined; source: string | null } {
-  const candidates = [
+function getRealtimeApiKey(operatorId?: OperatorId): ApiKeyInfo {
+  const suffix = operatorId?.toUpperCase();
+  const candidates: Array<[string, string | undefined]> = [];
+
+  if (suffix) {
+    candidates.push(
+      [`TRAFIKLAB_REALTIME_API_KEY_${suffix}`, process.env[`TRAFIKLAB_REALTIME_API_KEY_${suffix}`]],
+      [`TRAFIKLAB_API_KEY_${suffix}`, process.env[`TRAFIKLAB_API_KEY_${suffix}`]]
+    );
+  }
+
+  candidates.push(
     ["TRAFIKLAB_REALTIME_API_KEY", process.env.TRAFIKLAB_REALTIME_API_KEY],
     ["TRAFIKLAB_API_KEY", process.env.TRAFIKLAB_API_KEY]
-  ] as const;
+  );
+
   const match = candidates.find(([, value]) => Boolean(value?.trim()));
 
   return {
@@ -817,11 +836,35 @@ function getRealtimeApiKey(): { value: string | undefined; source: string | null
   };
 }
 
+function getRealtimeApiKeySummary(operatorIds: string[] | undefined, feed: FeedKind) {
+  const requestedOperators = operatorIds
+    ? new Set(operatorIds.map((operatorId) => operatorId.toLowerCase()))
+    : null;
+  const sources = OPERATORS
+    .filter((operator) => operator.supports[feed] && (!requestedOperators || requestedOperators.has(operator.id)))
+    .map((operator) => getRealtimeApiKey(operator.id).source)
+    .filter((source): source is string => Boolean(source));
+  const uniqueSources = [...new Set(sources)];
+
+  return {
+    hasAnyKey: uniqueSources.length > 0,
+    source:
+      uniqueSources.length === 0
+        ? null
+        : uniqueSources.length === 1
+          ? uniqueSources[0]
+          : `${uniqueSources.length} realtime key sources`
+  };
+}
+
 function redactSecrets(text: string) {
   const knownSecrets = [
     process.env.TRAFIKLAB_REALTIME_API_KEY,
     process.env.TRAFIKLAB_STATIC_API_KEY,
-    process.env.TRAFIKLAB_API_KEY
+    process.env.TRAFIKLAB_API_KEY,
+    ...Object.entries(process.env)
+      .filter(([key]) => key.startsWith("TRAFIKLAB_REALTIME_API_KEY_") || key.startsWith("TRAFIKLAB_API_KEY_"))
+      .map(([, value]) => value)
   ].filter((value): value is string => Boolean(value));
 
   return knownSecrets
